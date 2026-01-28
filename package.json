@@ -1,0 +1,41 @@
+{
+  "name": "godot-mcp",
+  "version": "2.0.0",
+  "description": "A comprehensive MCP server for Godot game engine integration with AI assistants",
+  "type": "module",
+  "main": "src/mcp/godot_mcp.js",
+  "scripts": {
+    "start": "node src/mcp/godot_mcp.js",
+    "test": "echo \"No tests configured yet\""
+  },
+  "keywords": [
+    "godot",
+    "mcp",
+    "model-context-protocol",
+    "game-development",
+    "ai-assistant",
+    "claude",
+    "cursor",
+    "cline",
+    "game-engine"
+  ],
+  "author": "Godot MCP Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/godot-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YOUR_USERNAME/godot-mcp/issues"
+  },
+  "homepage": "https://github.com/YOUR_USERNAME/godot-mcp#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "src/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ]
+}
