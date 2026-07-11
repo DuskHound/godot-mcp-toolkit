@@ -1,261 +1,181 @@
-# Godot MCP Server
+# Godot MCP Toolkit v3.0
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Godot](https://img.shields.io/badge/Godot-4.4%2B-blue.svg)](https://godotengine.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 
-A comprehensive Model Context Protocol (MCP) server for seamless AI assistant integration with the Godot game engine.
+**55+ tools** for AI-assisted Godot game development. Works with Claude, Cursor, Cline, opencode, and any MCP-compatible client.
 
 ## Features
 
-- **Project Management**: Launch editor, run projects, capture debug output
-- **Scene Operations**: Create, edit, add/remove nodes, load textures
-- **Runtime Testing**: Headless and windowed testing with error analysis
-- **UID Management**: Get and update resource UIDs (Godot 4.4+)
-- **Project Analysis**: Validate projects, analyze structure, list resources
-- **Script Operations**: Read scripts, list project scripts
-- **Cross-Platform**: Works on Windows, macOS, and Linux
-
-## Compatibility
-
-| Component | Version |
-|-----------|---------|
-| Godot | 4.4+ (some features work with 3.5+) |
-| Node.js | 18.0.0+ |
-| AI Platforms | Claude, Cursor, Cline, VS Code MCP extensions |
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Scene** | 7 | Create/edit scenes, add/remove nodes, load sprites, save, compare |
+| **Script** | 8 | Read/write/analyze GDScript, create from templates, refactor, find references |
+| **Project** | 7 | Settings, scene tree, validate, list projects/scenes, analyze dependencies |
+| **Asset** | 3 | Import textures, models, audio |
+| **UID** | 2 | Get/regenerate resource UIDs |
+| **Signal** | 6 | Connect/disconnect/list/emit signals, analyze flow |
+| **Performance** | 6 | Profile scenes/scripts, analyze memory, detect bottlenecks |
+| **Shader** | 6 | Edit/create/optimize shaders and materials |
+| **Animation** | 8 | Create/edit/animate, tracks, keyframes, export |
+| **Export** | 4 | MeshLibrary, export presets, quick/full testing |
+| **System** | 6 | Version, status, launch editor, run/stop project, debug output |
 
 ## Quick Start
 
-### 1. Installation
-
-Copy the files to your Godot project:
+### 1. Clone & Configure
 
 ```bash
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/godot-mcp.git
-
-# Copy to your project
-cp -r godot-mcp/src/* your-godot-project/
+git clone https://github.com/DuskHound/godot-mcp-toolkit.git
+cd godot-mcp-toolkit
 ```
 
-Or download and extract manually.
+### 2. Copy to Your Godot Project
 
-### 2. Configuration
+```bash
+cp -r src/addons/godot_mcp /path/to/your/godot/project/addons/
+```
 
-Add to your Claude Desktop MCP settings (`~/.claude/mcp_servers.json` or project `.claude/mcp_servers.json`):
+### 3. Configure MCP Client
+
+Add to your MCP client config (`.mcp.json` or Claude Desktop settings):
 
 ```json
 {
   "mcpServers": {
-    "godot": {
+    "godot-mcp": {
       "command": "node",
-      "args": ["mcp/godot_mcp.js"],
-      "cwd": "PATH_TO_YOUR_GODOT_PROJECT",
+      "args": ["path/to/godot-mcp-toolkit/src/mcp/godot_mcp.js"],
       "env": {
-        "GODOT_PATH": "PATH_TO_GODOT_EXECUTABLE",
-        "PROJECT_PATH": "PATH_TO_YOUR_GODOT_PROJECT"
+        "GODOT_PATH": "C:\\Path\\To\\Godot.exe",
+        "PROJECT_PATH": "C:\\Path\\To\\Your\\Godot\\Project"
       }
     }
   }
 }
 ```
 
-### 3. Start Using
+## Tool Reference
 
-Once configured, your AI assistant can use commands like:
-- "Run a quick test on my Godot project"
-- "Create a new scene called player.tscn"
-- "Add a Sprite2D node to the player scene"
-- "Get project information"
-
-## Available Tools
-
-### System Tools
+### Scene
 | Tool | Description |
 |------|-------------|
-| `godot_version` | Get installed Godot version |
-| `godot_status` | Get MCP server status and configuration |
-
-### Project Tools
-| Tool | Description |
-|------|-------------|
-| `launch_editor` | Launch Godot editor for the project |
-| `run_project` | Run project with output capture |
-| `stop_project` | Stop running project |
-| `get_debug_output` | Get captured debug output |
-| `list_projects` | List Godot projects in directory |
-| `get_project_info` | Get project metadata (name, main scene, autoloads) |
-| `analyze_project` | Analyze project structure (scripts, scenes, resources) |
-
-### Scene Tools
-| Tool | Description |
-|------|-------------|
-| `create_scene` | Create new scene with specified root node type |
-| `add_node` | Add node to existing scene |
+| `create_scene` | Create scene with root node type |
+| `add_node` | Add child node with properties |
 | `edit_node` | Edit node properties |
-| `remove_node` | Remove node from scene |
-| `load_sprite` | Load texture into Sprite2D/Sprite3D node |
-| `save_scene` | Save scene (optionally to new path) |
+| `remove_node` | Remove a node |
+| `load_sprite` | Load texture onto sprite |
+| `save_scene` | Save scene to path |
+| `compare_scenes` | Diff two scenes |
 
-### UID Tools (Godot 4.4+)
+### Script
 | Tool | Description |
 |------|-------------|
-| `get_uid` | Get UID for resource file |
-| `update_project_uids` | Update all project UID references |
+| `read_script` | Read file (fast, static) |
+| `edit_script` | Write/edit file |
+| `create_script` | Create from template (node2d, characterbody2d, autoload, state_machine, etc.) |
+| `list_scripts` | List all .gd files |
+| `analyze_script` | Get metrics (functions, classes, signals) |
+| `find_script_references` | Search symbol references project-wide |
+| `refactor_rename` | Rename symbol in file |
+| `refactor_extract_method` | Extract lines to new method |
 
-### Testing Tools
+### Project
 | Tool | Description |
 |------|-------------|
-| `quick_test` | 10-second headless test with error report |
-| `full_test` | 60-second comprehensive test with analysis |
+| `get_project_info` | Name, main scene, autoloads |
+| `get_project_settings` | Full project.godot settings |
+| `list_projects` | Find Godot projects in directory |
+| `list_scenes` | List all .tscn files |
+| `get_scene_tree` | Node hierarchy as JSON |
+| `validate_project` | Check for missing files, broken autoloads |
+| `analyze_dependencies` | Scene asset dependencies |
+
+### Signals
+| Tool | Description |
+|------|-------------|
+| `connect_signal` | Wire signal source→target |
+| `disconnect_signal` | Remove signal connection |
+| `list_signals` | List all signals in scene |
+| `emit_signal` | Test-fire a signal |
+| `get_signal_connections` | Map all connections |
+| `analyze_signal_flow` | Signal flow graph |
+
+### Performance
+| Tool | Description |
+|------|-------------|
+| `profile_scene` | Node count, draw call estimate |
+| `analyze_performance` | Project-wide perf scan |
+| `get_performance_report` | Full report |
+| `profile_script` | Script execution profile |
+| `analyze_memory_usage` | Memory analysis |
+| `detect_bottlenecks` | Find slow spots |
+
+### Shaders & Materials
+| Tool | Description |
+|------|-------------|
+| `edit_shader` | Edit .gdshader file |
+| `create_material` | Create .tres material |
+| `edit_material` | Set material properties |
+| `list_shaders` | List all shaders |
+| `create_shader` | New shader file |
+| `optimize_shader` | Optimization suggestions |
+
+### Animation
+| Tool | Description |
+|------|-------------|
+| `create_animation` | New animation |
+| `edit_animation` | Edit animation params |
+| `list_animations` | List animations |
+| `create_animation_library` | New library |
+| `add_animation_track` | Add track |
+| `edit_keyframe` | Edit keyframe data |
+| `play_animation` | Preview animation |
+| `export_animation` | Export animation data |
+
+### Export & Test
+| Tool | Description |
+|------|-------------|
+| `export_mesh_library` | Scene→MeshLibrary |
+| `get_export_presets` | List presets |
+| `quick_test` | 10s headless test |
+| `full_test` | 60s comprehensive test |
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GODOT_PATH` | Path to Godot executable | Auto-detect common locations |
+| `GODOT_PATH` | Path to Godot executable | Auto-detect |
 | `PROJECT_PATH` | Path to Godot project | Current directory |
-| `DEBUG` | Enable debug logging (`true`/`false`) | `false` |
-| `READ_ONLY_MODE` | Restrict to analysis operations | `false` |
+| `DEBUG` | Enable debug logging | `false` |
+| `READ_ONLY_MODE` | Analysis only, no writes | `false` |
 
-## Project Structure
+## Architecture
 
 ```
-godot-mcp/
-├── README.md              # This file
-├── LICENSE                # MIT License
-├── package.json           # Node.js package configuration
-│
-├── src/                   # Source files to copy to your project
-│   ├── mcp/
-│   │   └── godot_mcp.js   # Main MCP server (Node.js)
-│   │
-│   └── addons/
-│       └── godot_mcp/
-│           └── godot_operations.gd  # GDScript operations
-│
-└── examples/              # Example configurations
-    └── mcp_servers.json   # Example Claude configuration
+AI Client (Claude, Cursor, opencode)
+  ↕ stdio (MCP protocol)
+Node.js MCP Server (godot_mcp.js)
+  ↕ headless Godot spawn
+GDScript Operations (godot_operations.gd)
+  ↕ Godot Engine API
+Your Project
 ```
 
-## GDScript Operations
+## Security
 
-The server uses `godot_operations.gd` for complex Godot operations. It's executed via headless Godot and supports:
-
-**Scene Operations:**
-- `create_scene` - Create new scene files
-- `add_node` - Add nodes with properties
-- `edit_node` - Modify node properties
-- `remove_node` - Remove nodes
-- `load_sprite` - Load textures
-- `save_scene` - Save scene files
-
-**Resource Operations:**
-- `export_mesh_library` - Export 3D scenes as MeshLibrary
-
-**Project Operations:**
-- `get_project_settings` - Read project.godot settings
-- `get_scene_tree` - Get scene node hierarchy
-- `list_scenes` - List all .tscn files
-- `list_scripts` - List all .gd files
-- `validate_project` - Check for common issues
-
-**UID Operations:**
-- `get_uid` - Read .uid files
-- `resave_resources` - Regenerate UIDs
-
-## Read-Only Mode
-
-For CI/CD pipelines or collaborative environments, enable read-only mode:
-
-```json
-{
-  "env": {
-    "READ_ONLY_MODE": "true"
-  }
-}
-```
-
-This restricts operations to:
-- Project inspection and analysis
-- Debug output retrieval
-- Metadata queries
-
-## Troubleshooting
-
-### Godot Not Found
-```
-Error: Godot executable not found
-```
-**Solution:** Set `GODOT_PATH` environment variable to your Godot executable.
-
-### Connection Issues
-1. Restart your AI assistant
-2. Enable `DEBUG=true` for detailed logging
-3. Verify Node.js 18+ is installed: `node --version`
-
-### Scene Operations Failing
-1. Use resource paths: `res://scenes/player.tscn`
-2. Verify scene files exist
-3. Check Godot console for specific errors
-
-### Permission Errors
-Ensure the MCP server has write access to your project directory.
-
-## Examples
-
-### Create a Player Scene
-```
-Create a new scene at res://scenes/player.tscn with CharacterBody2D as root,
-then add a Sprite2D child and a CollisionShape2D child.
-```
-
-### Analyze Project for Issues
-```
-Run validate_project to check for missing files or configuration issues.
-```
-
-### Quick Error Check
-```
-Use quick_test to run the project headless for 10 seconds and report any errors.
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to:
-
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
-
-## Support
-
-If you find this project useful, consider supporting its development:
-
-[![PayPal](https://img.shields.io/badge/PayPal-Support-blue?logo=paypal)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=386AYZ3ZYDZM2)
-
-No pressure at all - but any amount is appreciated!
-
-### Connect
-
-- **Discord**: [Join the community](https://discord.gg/fUXXTk3YgG)
-- **Twitter**: [@duskhoundyt](https://www.twitter.com/duskhoundyt)
-- **Twitch**: [duskhoundyt](https://www.twitch.tv/duskhoundyt)
-- **TikTok**: [@duskhoundyt](https://www.tiktok.com/@duskhoundyt)
-
-**Business inquiries**: Dusklpbuisness@gmail.com
-
-## Credits
-
-Inspired by:
-- [bradypp/godot-mcp](https://github.com/bradypp/godot-mcp)
-- [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp)
-- [ee0pdt/Godot-MCP](https://github.com/ee0pdt/Godot-MCP)
+- Path traversal protection
+- Input sanitization (null bytes, special chars)
+- Node type whitelist
+- Read-only mode for CI/CD
+- Bounded output buffers
+- Process lifecycle management
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) file for details.
+MIT
 
 ---
 
-Made with care for the Godot community.
+Made by DuskHound for the Godot community.

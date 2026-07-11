@@ -1,12 +1,11 @@
 {
   "mcpServers": {
-    "godot": {
+    "godot-mcp": {
       "command": "node",
-      "args": ["mcp/godot_mcp.js"],
-      "cwd": "YOUR_GODOT_PROJECT_PATH",
+      "args": ["path/to/godot-mcp-toolkit/src/mcp/godot_mcp.js"],
       "env": {
-        "GODOT_PATH": "PATH_TO_GODOT_EXECUTABLE",
-        "PROJECT_PATH": "YOUR_GODOT_PROJECT_PATH",
+        "GODOT_PATH": "C:\\Program Files\\Godot\\Godot_v4.6-stable_win64.exe",
+        "PROJECT_PATH": "C:\\Path\\To\\Your\\Godot\\Project",
         "DEBUG": "false"
       }
     }

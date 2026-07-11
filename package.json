@@ -1,12 +1,15 @@
 {
-  "name": "godot-mcp",
-  "version": "2.0.0",
-  "description": "A comprehensive MCP server for Godot game engine integration with AI assistants",
+  "name": "godot-mcp-toolkit",
+  "version": "3.0.0",
+  "description": "55+ MCP tools for AI-assisted Godot game development. Works with Claude, Cursor, Cline, and opencode.",
   "type": "module",
   "main": "src/mcp/godot_mcp.js",
+  "bin": {
+    "godot-mcp": "./src/mcp/godot_mcp.js"
+  },
   "scripts": {
     "start": "node src/mcp/godot_mcp.js",
-    "test": "echo \"No tests configured yet\""
+    "test": "node src/mcp/godot_mcp.js --validate"
   },
   "keywords": [
     "godot",
@@ -17,18 +20,20 @@
     "claude",
     "cursor",
     "cline",
-    "game-engine"
+    "opencode",
+    "game-engine",
+    "gdscript"
   ],
-  "author": "Godot MCP Contributors",
+  "author": "DuskHound",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/godot-mcp.git"
+    "url": "https://github.com/DuskHound/godot-mcp-toolkit.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/godot-mcp/issues"
+    "url": "https://github.com/DuskHound/godot-mcp-toolkit/issues"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/godot-mcp#readme",
+  "homepage": "https://duskhound.itch.io/godot-mcp-toolkit",
   "engines": {
     "node": ">=18.0.0"
   },
