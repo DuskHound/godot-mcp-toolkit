@@ -241,7 +241,7 @@ async function runGDScriptOperation(operation, params) {
   if (CONFIG.READ_ONLY && !["get_uid", "get_project_settings", "get_scene_tree", "list_scenes", "list_scripts", "validate_project", "read_script", "analyze_script", "list_shaders", "list_animations", "analyze_dependencies", "get_performance_report"].includes(operation)) {
     throw new Error("Operation not allowed in read-only mode");
   }
-  const gdscriptPath = join(dirname(dirname(__dirname)), "addons", "godot_mcp", "godot_operations.gd");
+  const gdscriptPath = join(dirname(__dirname), "addons", "godot_mcp", "godot_operations.gd");
   if (!existsSync(gdscriptPath)) throw new Error("GDScript operations file not found");
   return new Promise((resolve, reject) => {
     const paramsJson = JSON.stringify(params);
