@@ -703,7 +703,31 @@ const TOOLS = [
   { name: "parse_check", description: "Fast GDScript parse validation (scans all .gd files for compile errors, 10-30s)", inputSchema: { type: "object", properties: { path: { type: "string", description: "Search path", default: "res://" } } } },
   { name: "query_classdb", description: "Query Godot ClassDB for class/method documentation. Use search to find classes, or query a specific class for methods, properties, signals.", inputSchema: { type: "object", properties: { class_name: { type: "string", description: "Class name" }, method_name: { type: "string", description: "Specific method" }, search: { type: "string", description: "Search all classes" } } } },
   { name: "capture_screenshot", description: "Capture runtime game viewport screenshot", inputSchema: { type: "object", properties: { output_path: { type: "string", description: "Save path (user://...)", default: "user://screenshot.png" }, fullscreen: { type: "boolean", default: true } } } },
-  { name: "inject_input", description: "Simulate keyboard/mouse/action input in a running game", inputSchema: { type: "object", properties: { type: { type: "string", description: "Event type: key, mouse_button, mouse_motion, action" }, action: { type: "string", description: "InputMap action name (for type=action)" }, key: { type: "number", description: "Keycode (for type=key)" }, pressed: { type: "boolean", default: true }, button: { type: "number", description: "Mouse button index (for type=mouse_button)" }, position: { type: "object", description: "Mouse position {x, y}" }, delta: { type: "object", description: "Mouse delta {x, y}" } }, required: ["type"] } }
+  { name: "inject_input", description: "Simulate keyboard/mouse/action input in a running game", inputSchema: { type: "object", properties: { type: { type: "string", description: "Event type: key, mouse_button, mouse_motion, action" }, action: { type: "string", description: "InputMap action name (for type=action)" }, key: { type: "number", description: "Keycode (for type=key)" }, pressed: { type: "boolean", default: true }, button: { type: "number", description: "Mouse button index (for type=mouse_button)" }, position: { type: "object", description: "Mouse position {x, y}" }, delta: { type: "object", description: "Mouse delta {x, y}" } }, required: ["type"] },
+  // Physics (2)
+  { name: "get_physics_layers", description: "Get all physics layer names (2D)", inputSchema: { type: "object", properties: {} } },
+  { name: "setup_collision", description: "Configure collision layer/mask on a node or set layer names", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "res://..." }, node_path_in_scene: { type: "string", description: "Node path within scene" }, layer: { type: "number", description: "Collision layer value" }, mask: { type: "number", description: "Collision mask value" }, layer_names: { type: "object", description: "Layer name map e.g. {\"1\":\"world\",\"2\":\"player\"}" } }, required: ["scene_path"] } },
+
+  // Audio (4)
+  { name: "list_audio_buses", description: "List all audio buses with volume, effects, mute state", inputSchema: { type: "object", properties: {} } },
+  { name: "add_audio_bus", description: "Add a new audio bus", inputSchema: { type: "object", properties: { name: { type: "string", default: "New Bus" }, volume_db: { type: "number", description: "Volume in dB" }, parent_index: { type: "number", description: "Optional index to copy from" } } } },
+  { name: "set_audio_bus_volume", description: "Set volume of an audio bus", inputSchema: { type: "object", properties: { bus_name: { type: "string" }, volume_db: { type: "number" } }, required: ["bus_name", "volume_db"] } },
+  { name: "add_audio_effect", description: "Add an audio effect to a bus (reverb, chorus, delay, eq, compressor, limiter, distortion, pitch_shift, stereo_enhance)", inputSchema: { type: "object", properties: { bus_name: { type: "string" }, effect_type: { type: "string", description: "reverb, chorus, delay, eq, compressor, limiter, distortion, pitch_shift, stereo_enhance" }, properties: { type: "object", description: "Effect properties" } }, required: ["bus_name", "effect_type"] } },
+
+  // Input Map (3)
+  { name: "list_input_actions", description: "List all input map actions with their events", inputSchema: { type: "object", properties: {} } },
+  { name: "add_input_action", description: "Create or update an input action with events", inputSchema: { type: "object", properties: { action_name: { type: "string" }, events: { type: "array", description: "Array of event objects with type, keycode, etc." }, dead: { type: "boolean", description: "Deadzone/deadline" } }, required: ["action_name"] } },
+  { name: "add_input_event", description: "Add a key/mouse/joypad event to an existing input action", inputSchema: { type: "object", properties: { action_name: { type: "string" }, type: { type: "string", default: "key", description: "key, mouse_button, joypad_button, joypad_motion" }, keycode: { type: "number" }, button_index: { type: "number" }, pressed: { type: "boolean" }, ctrl: { type: "boolean" }, shift: { type: "boolean" }, alt: { type: "boolean" }, device: { type: "number" } }, required: ["action_name"] } },
+
+  // Testing (3)
+  { name: "detect_test_framework", description: "Detect installed test frameworks (GUT, GdUnit4, builtin)", inputSchema: { type: "object", properties: {} } },
+  { name: "list_tests", description: "List all test files and their test methods", inputSchema: { type: "object", properties: { path: { type: "string", description: "Search path", default: "res://" } } } },
+  { name: "run_tests", description: "Run tests using detected or specified framework", inputSchema: { type: "object", properties: { framework: { type: "string", default: "builtin", description: "GUT, GdUnit4, or builtin" }, path: { type: "string", description: "Specific test file path" } } } },
+
+  // Project Intelligence (3)
+  { name: "get_signal_flow", description: "Analyze signal definitions and usages across scenes", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "Optional specific scene", default: "res://" } } } },
+  { name: "get_dependency_graph", description: "Build dependency graph for scenes (scripts, textures, resources)", inputSchema: { type: "object", properties: { path: { type: "string", description: "Search path", default: "res://" } } } },
+  { name: "analyze_project_health", description: "Score project health (missing files, broken autoloads, large files)", inputSchema: { type: "object", properties: {} } },
 ];
 
 // =============================================================================
@@ -773,6 +797,81 @@ async function handleCaptureScreenshot(args) {
 
 async function handleInjectInput(args) {
   try { return jsonContent(await callGDScript("inject_input", { type: args.type || "key", action: args.action || "", key: args.key || 0, pressed: args.pressed !== false, button: args.button || 1, position: args.position || {}, delta: args.delta || {} })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleGetPhysicsLayers(args) {
+  try { return jsonContent(await callGDScript("get_physics_layers", {})); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleSetupCollision(args) {
+  try { return jsonContent(await callGDScript("setup_collision", { node_path: args.scene_path, node_path_in_scene: args.node_path_in_scene || "", layer: args.layer, mask: args.mask, layer_names: args.layer_names || {} })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleListAudioBuses(args) {
+  try { return jsonContent(await callGDScript("list_audio_buses", {})); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleAddAudioBus(args) {
+  try { return jsonContent(await callGDScript("add_audio_bus", { name: args.name || "New Bus", volume_db: args.volume_db, parent_index: args.parent_index })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleSetAudioBusVolume(args) {
+  try { return jsonContent(await callGDScript("set_audio_bus_volume", { bus_name: args.bus_name, volume_db: args.volume_db })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleAddAudioEffect(args) {
+  try { return jsonContent(await callGDScript("add_audio_effect", { bus_name: args.bus_name, effect_type: args.effect_type, properties: args.properties || {} })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleListInputActions(args) {
+  try { return jsonContent(await callGDScript("list_input_actions", {})); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleAddInputAction(args) {
+  try { return jsonContent(await callGDScript("add_input_action", { action_name: args.action_name, events: args.events || [], dead: args.dead })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleAddInputEvent(args) {
+  try { return jsonContent(await callGDScript("add_input_event", { action_name: args.action_name, type: args.type || "key", keycode: args.keycode, button_index: args.button_index, pressed: args.pressed, ctrl: args.ctrl, shift: args.shift, alt: args.alt, device: args.device })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleDetectTestFramework(args) {
+  try { return jsonContent(await callGDScript("detect_test_framework", {})); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleListTests(args) {
+  try { return jsonContent(await callGDScript("list_tests", { path: args.path || "res://" })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleRunTests(args) {
+  try { return jsonContent(await callGDScript("run_tests", { framework: args.framework || "builtin", path: args.path })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleGetSignalFlow(args) {
+  try { return jsonContent(await callGDScript("get_signal_flow", { scene_path: args.scene_path || "" })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleGetDependencyGraph(args) {
+  try { return jsonContent(await callGDScript("get_dependency_graph", { path: args.path || "res://" })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleAnalyzeProjectHealth(args) {
+  try { return jsonContent(await callGDScript("analyze_project_health", {})); }
   catch (e) { return jsonContent({ error: e.message }); }
 }
 
@@ -860,6 +959,21 @@ const HANDLERS = {
   "query_classdb": handleQueryClassDB,
   "capture_screenshot": handleCaptureScreenshot,
   "inject_input": handleInjectInput
+  "get_physics_layers": handleGetPhysicsLayers,
+  "setup_collision": handleSetupCollision,
+  "list_audio_buses": handleListAudioBuses,
+  "add_audio_bus": handleAddAudioBus,
+  "set_audio_bus_volume": handleSetAudioBusVolume,
+  "add_audio_effect": handleAddAudioEffect,
+  "list_input_actions": handleListInputActions,
+  "add_input_action": handleAddInputAction,
+  "add_input_event": handleAddInputEvent,
+  "detect_test_framework": handleDetectTestFramework,
+  "list_tests": handleListTests,
+  "run_tests": handleRunTests,
+  "get_signal_flow": handleGetSignalFlow,
+  "get_dependency_graph": handleGetDependencyGraph,
+  "analyze_project_health": handleAnalyzeProjectHealth,
 };
 
 // =============================================================================

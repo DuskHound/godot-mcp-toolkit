@@ -127,6 +127,11 @@ func execute_operation(operation: String, params: Dictionary) -> void:
 		"quick_test": quick_test(params)
 		"full_test": full_test(params)
 		
+		"query_classdb": query_classdb(params)
+		"capture_screenshot": capture_screenshot(params)
+		"inject_input": inject_input(params)
+		"parse_check": parse_check(params)
+
 		_:
 			log_error("Unknown operation: " + operation)
 			print_available_operations()
@@ -174,7 +179,13 @@ func print_available_operations() -> void:
 	log_info("EXPORT & TESTING (4):")
 	log_info("  export_mesh_library, get_export_presets, quick_test, full_test")
 	log_info("")
-	log_info("TOTAL: 50+ tools for complete Godot development")
+	log_info("")
+	log_info("RUNTIME & UTILITY (4):")
+	log_info("  query_classdb - Query Godot ClassDB for API documentation")
+	log_info("  capture_screenshot - Capture runtime game viewport screenshot")
+	log_info("  inject_input - Simulate keyboard/mouse input in running game")
+	log_info("  parse_check - Fast GDScript parse validation")
+	log_info("TOTAL: 55+ tools for complete Godot development")
 
 # ============================================================================
 # LOGGING
@@ -1964,6 +1975,11 @@ func create_material(params: Dictionary) -> void:
 			material = ShaderMaterial.new()
 		"CanvasItemMaterial":
 			material = CanvasItemMaterial.new()
+		"query_classdb": query_classdb(params)
+		"capture_screenshot": capture_screenshot(params)
+		"inject_input": inject_input(params)
+		"parse_check": parse_check(params)
+
 		_:
 			material = StandardMaterial3D.new()
 	
@@ -2078,6 +2094,11 @@ func create_shader(params: Dictionary) -> void:
 		ALBEDO = texture(texture_albedo, UV).rgb;
 	}
 """
+		"query_classdb": query_classdb(params)
+		"capture_screenshot": capture_screenshot(params)
+		"inject_input": inject_input(params)
+		"parse_check": parse_check(params)
+
 		_:
 			code += """
 	void fragment() {
@@ -2734,3 +2755,183 @@ func export_animation(params: Dictionary) -> void:
 	else:
 		log_error("Failed to export animation")
 		quit(1)
+
+# ============================================================================
+# RUNTIME & UTILITY OPERATIONS
+# ============================================================================
+
+func query_classdb(params: Dictionary) -> void:
+	var class_name: String = params.get("class_name", "")
+	var method_name: String = params.get("method_name", "")
+	var search: String = params.get("search", "")
+
+	if not search.is_empty():
+		var results: Array[Dictionary] = []
+		var all_classes := ClassDB.get_class_list()
+		for c in all_classes:
+			if c.to_lower().contains(search.to_lower()):
+				var inherits := ClassDB.get_parent_class(c)
+				results.append({"class": c, "inherits": inherits, "methods": ClassDB.class_get_method_list(c).size()})
+		print(JSON.stringify({"success": true, "search": search, "results": results, "count": results.size()}))
+		return
+
+	if class_name.is_empty():
+		log_error("class_name or search required")
+		quit(1)
+		return
+
+	if not ClassDB.class_exists(class_name):
+		log_error("Class not found: " + class_name)
+		quit(1)
+		return
+
+	var parent := ClassDB.get_parent_class(class_name)
+	var methods := ClassDB.class_get_method_list(class_name)
+	var properties := ClassDB.class_get_property_list(class_name)
+	var signals := ClassDB.class_get_signal_list(class_name)
+	var constants := ClassDB.class_get_constant_list(class_name)
+
+	var method_details: Array[Dictionary] = []
+	if not method_name.is_empty():
+		for m in methods:
+			if m["name"] == method_name:
+				var args: Array = m.get("args", [])
+				var arg_details: Array[Dictionary] = []
+				for a in args:
+					arg_details.append({"name": a["name"], "type": a["type"]})
+				method_details.append({"name": m["name"], "return": m.get("return", {}), "args": arg_details, "flags": m.get("flags", 0)})
+	else:
+		for m in methods:
+			var args: Array = m.get("args", [])
+			var arg_details: Array[Dictionary] = []
+			for a in args:
+				arg_details.append({"name": a["name"], "type": a["type"]})
+			method_details.append({"name": m["name"], "return": m.get("return", {}), "args": arg_details, "flags": m.get("flags", 0)})
+
+	print(JSON.stringify({
+		"success": true,
+		"class": class_name,
+		"inherits": parent,
+		"methods": method_details,
+		"properties": properties,
+		"signals": signals,
+		"constants": constants,
+		"is_instantiable": ClassDB.can_instantiate(class_name)
+	}))
+
+func capture_screenshot(params: Dictionary) -> void:
+	var output_path: String = params.get("output_path", "user://screenshot.png")
+	var fullscreen: bool = params.get("fullscreen", true)
+
+	await get_tree().process_frame
+	var viewport := get_tree().root
+	if not viewport:
+		log_error("No viewport available")
+		quit(1)
+		return
+
+	var image := viewport.get_texture().get_image()
+	var error := image.save_png(output_path)
+	if error == OK:
+		log_success("Screenshot saved: " + output_path)
+		print(JSON.stringify({"success": true, "path": output_path, "size": image.get_size()}))
+	else:
+		log_error("Failed to save screenshot")
+		quit(1)
+
+func inject_input(params: Dictionary) -> void:
+	var event_type: String = params.get("type", "key")  # key, mouse_button, mouse_motion, action
+	var action_name: String = params.get("action", "")
+	var key_code: int = params.get("key", 0)
+	var pressed: bool = params.get("pressed", true)
+	var mouse_button: int = params.get("button", 1)
+	var mouse_pos: Dictionary = params.get("position", {})
+	var mouse_delta: Dictionary = params.get("delta", {})
+
+	var viewport := get_tree().root
+	if not viewport:
+		log_error("No viewport available")
+		quit(1)
+		return
+
+	match event_type:
+		"action":
+			if action_name.is_empty():
+				log_error("action name required")
+				quit(1)
+				return
+			var action := InputMap.action_get_events(action_name)
+			if pressed:
+				Input.action_press(action_name)
+			else:
+				Input.action_release(action_name)
+			log_info("Action: " + action_name + " -> " + ("pressed" if pressed else "released"))
+
+		"key":
+			var event := InputEventKey.new()
+			event.keycode = key_code
+			event.pressed = pressed
+			Input.parse_input_event(event)
+			log_info("Key event: " + str(key_code) + " -> " + ("pressed" if pressed else "released"))
+
+		"mouse_button":
+			var event := InputEventMouseButton.new()
+			event.button_index = mouse_button
+			event.pressed = pressed
+			if mouse_pos.has("x"): event.position.x = mouse_pos.x
+			if mouse_pos.has("y"): event.position.y = mouse_pos.y
+			Input.parse_input_event(event)
+			log_info("Mouse button: " + str(mouse_button) + " -> " + ("pressed" if pressed else "released"))
+
+		"mouse_motion":
+			var event := InputEventMouseMotion.new()
+			if mouse_pos.has("x"): event.position.x = mouse_pos.x
+			if mouse_pos.has("y"): event.position.y = mouse_pos.y
+			if mouse_delta.has("x"): event.relative.x = mouse_delta.x
+			if mouse_delta.has("y"): event.relative.y = mouse_delta.y
+			Input.parse_input_event(event)
+			log_info("Mouse motion: " + str(event.position))
+
+	print(JSON.stringify({"success": true, "event_type": event_type, "pressed": pressed}))
+
+func parse_check(params: Dictionary) -> void:
+	var path: String = params.get("path", "res://")
+	var scripts := _find_gd_files(path)
+	var total := scripts.size()
+	var passed := 0
+	var failed := 0
+	var errors: Array[Dictionary] = []
+
+	for script_path in scripts:
+		var script := load(script_path) as Script
+		if not script:
+			failed += 1
+			errors.append({"path": script_path, "error": "Failed to load (compile error)"})
+			printerr("PARSE ERROR: " + script_path + " -> Failed to load")
+		else:
+			passed += 1
+
+	print(JSON.stringify({
+		"success": failed == 0,
+		"total": total,
+		"passed": passed,
+		"failed": failed,
+		"errors": errors
+	}))
+
+func _find_gd_files(base: String) -> Array[String]:
+	var result: Array[String] = []
+	var dir := DirAccess.open(base)
+	if not dir:
+		return result
+	dir.list_dir_begin()
+	var f := dir.get_next()
+	while f != "":
+		var full := base.path_join(f)
+		if dir.current_is_dir() and not f.begins_with("."):
+			result.append_array(_find_gd_files(full + "/"))
+		elif f.ends_with(".gd"):
+			result.append(full)
+		f = dir.get_next()
+	dir.list_dir_end()
+	return result
