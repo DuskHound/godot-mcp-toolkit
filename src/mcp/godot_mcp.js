@@ -224,13 +224,110 @@ function getDebugOutput() {
   return { stdout: outputBuffer.stdout.join(""), stderr: outputBuffer.stderr.join(""), errors: outputBuffer.errors, warnings: outputBuffer.warnings, errorCount: outputBuffer.errors.length, warningCount: outputBuffer.warnings.length };
 }
 
+const PARSE_ERROR_PATTERNS = [
+  "SCRIPT ERROR", "Parse Error", "Compile Error",
+  "Failed to load", "Nonexistent", "not declared",
+  "parse error", "compile error", "syntax error"
+];
+
 function parseOutputForErrors(text) {
   const lines = text.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.includes("ERROR") || trimmed.includes("SCRIPT ERROR")) appendToBuffer(outputBuffer.errors, trimmed);
-    if (trimmed.includes("WARNING") || trimmed.includes("SCRIPT WARNING")) appendToBuffer(outputBuffer.warnings, trimmed);
+    if (!trimmed) continue;
+    for (const pattern of PARSE_ERROR_PATTERNS) {
+      if (trimmed.includes(pattern)) {
+        appendToBuffer(outputBuffer.errors, trimmed);
+        break;
+      }
+    }
+    if (trimmed.includes("WARNING") || trimmed.includes("SCRIPT WARNING")) {
+      appendToBuffer(outputBuffer.warnings, trimmed);
+    }
   }
+}
+
+function isBenignWarning(line) {
+  const benign = [
+    "Dummy renderer", "dummy-renderer", "telemetry", "physics interp",
+    "physics/interpolation", "Performance was not measured"
+  ];
+  for (const b of benign) {
+    if (line.includes(b)) return true;
+  }
+  return false;
+}
+
+async function handleCheckOnly(args) {
+  const timeout = validateTimeout(args.timeout || 240000);
+  const outputPath = args.output_path || "";
+  log("info", `Running parse check (--headless --check-only) with ${timeout}ms timeout`);
+
+  return new Promise((resolve) => {
+    clearOutputBuffer();
+    const startTime = Date.now();
+    const godot = spawn(CONFIG.GODOT_PATH, ["--headless", "--check-only", "--path", CONFIG.PROJECT_PATH], { windowsHide: true });
+    activeGodotProcess = godot;
+
+    let fullStdout = "";
+    let fullStderr = "";
+
+    godot.stdout.on("data", (data) => { const text = data.toString(); fullStdout += text; appendToBuffer(outputBuffer.stdout, text); parseOutputForErrors(text); });
+    godot.stderr.on("data", (data) => { const text = data.toString(); fullStderr += text; appendToBuffer(outputBuffer.stderr, text); parseOutputForErrors(text); });
+
+    godot.on("close", (code) => {
+      activeGodotProcess = null;
+      const duration = Date.now() - startTime;
+      const realErrors = outputBuffer.errors.filter(e => !isBenignWarning(e));
+      const realWarnings = outputBuffer.warnings.filter(w => !isBenignWarning(w));
+      const result = {
+        success: code === 0,
+        exitCode: code,
+        duration,
+        timedOut: false,
+        errorCount: realErrors.length,
+        warningCount: realWarnings.length,
+        errors: realErrors,
+        warnings: realWarnings,
+        allErrors: outputBuffer.errors,
+        allWarnings: outputBuffer.warnings,
+        stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE),
+        stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE)
+      };
+      if (outputPath) {
+        try {
+          writeFileSync(outputPath, JSON.stringify(result, null, 2), "utf-8");
+        } catch (e) {
+          result.writeError = e.message;
+        }
+      }
+      resolve(jsonContent(result));
+    });
+
+    godot.on("error", (err) => {
+      activeGodotProcess = null;
+      resolve(jsonContent({ success: false, error: err.message }));
+    });
+
+    setTimeout(() => {
+      if (godot && !godot.killed) {
+        godot.kill("SIGTERM");
+        setTimeout(() => { if (!godot.killed) godot.kill("SIGKILL"); }, 2000);
+        const result = {
+          success: false, exitCode: -1, timedOut: true,
+          duration: Date.now() - startTime,
+          errorCount: outputBuffer.errors.length,
+          errors: outputBuffer.errors, warnings: outputBuffer.warnings,
+          stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE),
+          stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE)
+        };
+        if (outputPath) {
+          try { writeFileSync(outputPath, JSON.stringify(result, null, 2), "utf-8"); } catch {}
+        }
+        resolve(jsonContent(result));
+      }
+    }, timeout + 5000);
+  });
 }
 
 // =============================================================================
@@ -708,6 +805,7 @@ const TOOLS = [
   { name: "run_project", description: "Run the Godot project and capture output", inputSchema: { type: "object", properties: { headless: { type: "boolean", description: "Headless mode", default: false }, timeout: { type: "number", description: "Timeout in ms", default: 30000 } } } },
   { name: "stop_project", description: "Stop the running Godot project", inputSchema: { type: "object", properties: {} } },
   { name: "get_debug_output", description: "Get captured debug output", inputSchema: { type: "object", properties: {} } },
+  { name: "check_only", description: "Run Godot --headless --check-only parse validation with bounded timeout. Captures parse/compile errors across all scripts and scenes. Filters benign warnings (dummy renderer, telemetry, physics interp).", inputSchema: { type: "object", properties: { timeout: { type: "number", description: "Timeout in ms (default 240000 = 4 min)", default: 240000 }, output_path: { type: "string", description: "Optional file path to write results JSON" } } } },
 
   // Scene (7)
   { name: "create_scene", description: "Create a new Godot scene", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "res://..." }, root_node_type: { type: "string", default: "Node2D" } }, required: ["scene_path"] } },
@@ -798,6 +896,7 @@ const HANDLERS = {
   "run_project": (a) => runProject({ headless: a.headless, timeout: a.timeout }).then(jsonContent),
   "stop_project": () => jsonContent(stopProject()),
   "get_debug_output": () => jsonContent(getDebugOutput()),
+  "check_only": handleCheckOnly,
 
   "create_scene": handleCreateScene,
   "add_node": handleAddNode,
