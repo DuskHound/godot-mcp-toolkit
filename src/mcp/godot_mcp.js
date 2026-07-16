@@ -258,189 +258,6 @@ function isBenignWarning(line) {
   return false;
 }
 
-async function handleCheckOnly(args) {
-  const timeout = validateTimeout(args.timeout || 240000);
-  const outputPath = args.output_path || "";
-  log("info", `Running parse check (--headless --check-only) with ${timeout}ms timeout`);
-
-  return new Promise((resolve) => {
-    clearOutputBuffer();
-    const startTime = Date.now();
-    const godot = spawn(CONFIG.GODOT_PATH, ["--headless", "--check-only", "--path", CONFIG.PROJECT_PATH], { windowsHide: true });
-    activeGodotProcess = godot;
-
-    let fullStdout = "";
-    let fullStderr = "";
-
-    godot.stdout.on("data", (data) => { const text = data.toString(); fullStdout += text; appendToBuffer(outputBuffer.stdout, text); parseOutputForErrors(text); });
-    godot.stderr.on("data", (data) => { const text = data.toString(); fullStderr += text; appendToBuffer(outputBuffer.stderr, text); parseOutputForErrors(text); });
-
-    godot.on("close", (code) => {
-      activeGodotProcess = null;
-      const duration = Date.now() - startTime;
-      const realErrors = outputBuffer.errors.filter(e => !isBenignWarning(e));
-      const realWarnings = outputBuffer.warnings.filter(w => !isBenignWarning(w));
-      const result = {
-        success: code === 0,
-        exitCode: code,
-        duration,
-        timedOut: false,
-        errorCount: realErrors.length,
-        warningCount: realWarnings.length,
-        errors: realErrors,
-        warnings: realWarnings,
-        allErrors: outputBuffer.errors,
-        allWarnings: outputBuffer.warnings,
-        stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE),
-        stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE)
-      };
-      if (outputPath) {
-        try {
-          writeFileSync(outputPath, JSON.stringify(result, null, 2), "utf-8");
-        } catch (e) {
-          result.writeError = e.message;
-        }
-      }
-      resolve(jsonContent(result));
-    });
-
-    godot.on("error", (err) => {
-      activeGodotProcess = null;
-      resolve(jsonContent({ success: false, error: err.message }));
-    });
-
-    setTimeout(() => {
-      if (godot && !godot.killed) {
-        godot.kill("SIGTERM");
-        setTimeout(() => { if (!godot.killed) godot.kill("SIGKILL"); }, 2000);
-        const result = {
-          success: false, exitCode: -1, timedOut: true,
-          duration: Date.now() - startTime,
-          errorCount: outputBuffer.errors.length,
-          errors: outputBuffer.errors, warnings: outputBuffer.warnings,
-          stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE),
-          stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE)
-        };
-        if (outputPath) {
-          try { writeFileSync(outputPath, JSON.stringify(result, null, 2), "utf-8"); } catch {}
-        }
-        resolve(jsonContent(result));
-      }
-    }, timeout + 5000);
-  });
-}
-
-// =============================================================================
-// GDSCRIPT OPERATIONS (via headless Godot)
-// =============================================================================
-
-async function runGDScriptOperation(operation, params) {
-  if (CONFIG.READ_ONLY && !["get_uid", "get_project_settings", "get_scene_tree", "list_scenes", "list_scripts", "validate_project", "read_script", "analyze_script", "list_shaders", "list_animations", "analyze_dependencies", "get_performance_report"].includes(operation)) {
-    throw new Error("Operation not allowed in read-only mode");
-  }
-  const gdscriptPath = join(dirname(__dirname), "addons", "godot_mcp", "godot_operations.gd");
-  if (!existsSync(gdscriptPath)) throw new Error("GDScript operations file not found");
-  return new Promise((resolve, reject) => {
-    const paramsJson = JSON.stringify(params);
-    const args = ["--headless", "--path", CONFIG.PROJECT_PATH, "--script", gdscriptPath, operation, paramsJson];
-    log("debug", `Running GDScript operation: ${operation}`);
-    const godot = spawn(CONFIG.GODOT_PATH, args, { windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    godot.stdout.on("data", (data) => { stdout += data.toString().substring(0, CONFIG.MAX_OUTPUT_SIZE); });
-    godot.stderr.on("data", (data) => { stderr += data.toString().substring(0, CONFIG.MAX_OUTPUT_SIZE); });
-    godot.on("close", (code) => { resolve({ success: code === 0, output: stdout, stderr, exitCode: code }); });
-    godot.on("error", (err) => { resolve({ success: false, error: err.message }); });
-    setTimeout(() => { if (!godot.killed) { godot.kill(); resolve({ success: false, error: "Operation timed out" }); } }, 60000);
-  });
-}
-
-function parseGDScriptOutput(result) {
-  if (!result.success) return { success: false, error: result.stderr || result.error || "Operation failed" };
-  try {
-    const lines = result.output.split("\n");
-    const jsonLines = lines.filter(l => l.startsWith("{") || l.startsWith("["));
-    if (jsonLines.length === 0) return { success: true, data: { raw: result.output } };
-    return { success: true, data: JSON.parse(jsonLines[jsonLines.length - 1]) };
-  } catch (e) {
-    return { success: true, data: { raw: result.output } };
-  }
-}
-
-// =============================================================================
-// STATIC FILE OPERATIONS (Node.js native, no Godot needed)
-// =============================================================================
-
-function readScriptFile(scriptPath) {
-  const absPath = resToAbsolute(scriptPath);
-  if (!existsSync(absPath)) throw new Error(`Script not found: ${scriptPath}`);
-  const content = readFileSync(absPath, "utf-8");
-  return { path: scriptPath, content, lines: content.split("\n").length, size: statSync(absPath).size };
-}
-
-function writeScriptFile(scriptPath, content) {
-  const absPath = resToAbsolute(scriptPath);
-  const dir = dirname(absPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(absPath, content, "utf-8");
-  return { path: scriptPath, size: content.length };
-}
-
-function listProjectFiles(ext, searchPath = "res://") {
-  const absPath = searchPath.startsWith("res://") ? join(CONFIG.PROJECT_PATH, searchPath.replace("res://", "")) : searchPath;
-  const files = [];
-  function scan(dir, depth = 0) {
-    if (depth > 10) return;
-    try {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) { if (!entry.name.startsWith(".") && entry.name !== ".godot") scan(join(dir, entry.name), depth + 1); }
-        else if (entry.name.endsWith(ext)) files.push(join(dir, entry.name));
-      }
-    } catch {}
-  }
-  scan(absPath);
-  return files.map(f => "res://" + relative(CONFIG.PROJECT_PATH, f).replace(/\\/g, "/"));
-}
-
-function analyzeScriptStatic(scriptPath) {
-  const absPath = resToAbsolute(scriptPath);
-  if (!existsSync(absPath)) throw new Error(`Script not found: ${scriptPath}`);
-  const content = readFileSync(absPath, "utf-8");
-  const lines = content.split("\n");
-  const metrics = { total_lines: lines.length, code_lines: 0, comment_lines: 0, blank_lines: 0, functions: [], classes: [], signals: [], exports: [], onready_vars: [] };
-  for (let i = 0; i < lines.length; i++) {
-    const stripped = lines[i].trim();
-    if (!stripped) { metrics.blank_lines++; continue; }
-    if (stripped.startsWith("#")) { metrics.comment_lines++; continue; }
-    metrics.code_lines++;
-    if (stripped.startsWith("func ")) metrics.functions.push({ name: stripped.split("(")[0].replace("func ", ""), line: i + 1 });
-    if (stripped.startsWith("class ") || stripped.startsWith("class_name ")) metrics.classes.push({ name: stripped.split(" ")[1].split(":")[0].split("(")[0], line: i + 1 });
-    if (stripped.startsWith("signal ")) metrics.signals.push({ name: stripped.replace("signal ", "").split("(")[0], line: i + 1 });
-    if (stripped.includes("@export")) {
-      let varName = stripped.split(":")[0].strip_edges ? stripped.split(":")[0].trim() : stripped;
-      metrics.exports.push({ name: varName, line: i + 1 });
-    }
-    if (stripped.includes("@onready")) {
-      let varName = stripped.split(":")[0].trim();
-      metrics.onready_vars.push({ name: varName, line: i + 1 });
-    }
-  }
-  return { path: scriptPath, metrics };
-}
-
-// =============================================================================
-// GODOT HEADLESS HELPER FUNCTIONS
-// =============================================================================
-
-async function callGDScript(operation, params) {
-  const result = await runGDScriptOperation(operation, params);
-  return parseGDScriptOutput(result);
-}
-
-// =============================================================================
-// TOOL HANDLERS
-// =============================================================================
-
 async function handleGodotVersion() {
   return jsonContent({ version: await getGodotVersion(), path: CONFIG.GODOT_PATH });
 }
@@ -805,7 +622,7 @@ const TOOLS = [
   { name: "run_project", description: "Run the Godot project and capture output", inputSchema: { type: "object", properties: { headless: { type: "boolean", description: "Headless mode", default: false }, timeout: { type: "number", description: "Timeout in ms", default: 30000 } } } },
   { name: "stop_project", description: "Stop the running Godot project", inputSchema: { type: "object", properties: {} } },
   { name: "get_debug_output", description: "Get captured debug output", inputSchema: { type: "object", properties: {} } },
-  { name: "check_only", description: "Run Godot --headless --check-only parse validation with bounded timeout. Captures parse/compile errors across all scripts and scenes. Filters benign warnings (dummy renderer, telemetry, physics interp).", inputSchema: { type: "object", properties: { timeout: { type: "number", description: "Timeout in ms (default 240000 = 4 min)", default: 240000 }, output_path: { type: "string", description: "Optional file path to write results JSON" } } } },
+  { name: "check_only", description: "Fast parse validation using --script mode (10-30s, no asset import). Scans all .gd files for compile errors.", inputSchema: { type: "object", properties: { timeout: { type: "number", description: "Timeout in ms", default: 60000 }, output_path: { type: "string", description: "Optional file path to write results JSON" } } } },
 
   // Scene (7)
   { name: "create_scene", description: "Create a new Godot scene", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "res://..." }, root_node_type: { type: "string", default: "Node2D" } }, required: ["scene_path"] } },
@@ -882,12 +699,87 @@ const TOOLS = [
   { name: "export_mesh_library", description: "Export scene as MeshLibrary", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "res://..." }, output_path: { type: "string", description: "res://..." } }, required: ["scene_path", "output_path"] } },
   { name: "get_export_presets", description: "List export presets", inputSchema: { type: "object", properties: {} } },
   { name: "quick_test", description: "Quick headless test (10s)", inputSchema: { type: "object", properties: { timeout: { type: "number", default: 10000 } } } },
-  { name: "full_test", description: "Comprehensive test with analysis", inputSchema: { type: "object", properties: { timeout: { type: "number", default: 60000 } } } }
+  { name: "full_test", description: "Comprehensive test with analysis", inputSchema: { type: "object", properties: { timeout: { type: "number", default: 60000 } } } },
+  { name: "parse_check", description: "Fast GDScript parse validation (scans all .gd files for compile errors, 10-30s)", inputSchema: { type: "object", properties: { path: { type: "string", description: "Search path", default: "res://" } } } },
+  { name: "query_classdb", description: "Query Godot ClassDB for class/method documentation. Use search to find classes, or query a specific class for methods, properties, signals.", inputSchema: { type: "object", properties: { class_name: { type: "string", description: "Class name" }, method_name: { type: "string", description: "Specific method" }, search: { type: "string", description: "Search all classes" } } } },
+  { name: "capture_screenshot", description: "Capture runtime game viewport screenshot", inputSchema: { type: "object", properties: { output_path: { type: "string", description: "Save path (user://...)", default: "user://screenshot.png" }, fullscreen: { type: "boolean", default: true } } } },
+  { name: "inject_input", description: "Simulate keyboard/mouse/action input in a running game", inputSchema: { type: "object", properties: { type: { type: "string", description: "Event type: key, mouse_button, mouse_motion, action" }, action: { type: "string", description: "InputMap action name (for type=action)" }, key: { type: "number", description: "Keycode (for type=key)" }, pressed: { type: "boolean", default: true }, button: { type: "number", description: "Mouse button index (for type=mouse_button)" }, position: { type: "object", description: "Mouse position {x, y}" }, delta: { type: "object", description: "Mouse delta {x, y}" } }, required: ["type"] } }
 ];
 
 // =============================================================================
 // TOOL HANDLER DISPATCH
 // =============================================================================
+
+async function handleCheckOnly(args) {
+  const timeout = validateTimeout(args.timeout || 60000);
+  const parseScriptPath = join(dirname(dirname(__dirname)), "addons", "godot_mcp", "godot_operations.gd");
+  log("info", `Running fast parse check via --script with ${timeout}ms timeout`);
+
+  return new Promise((resolve) => {
+    clearOutputBuffer();
+    const startTime = Date.now();
+    const godot = spawn(CONFIG.GODOT_PATH, ["--headless", "--path", CONFIG.PROJECT_PATH, "--script", parseScriptPath, "parse_check", "{}"], { windowsHide: true });
+    activeGodotProcess = godot;
+
+    let fullStdout = "";
+    let fullStderr = "";
+
+    godot.stdout.on("data", (data) => { const text = data.toString(); fullStdout += text; appendToBuffer(outputBuffer.stdout, text); });
+    godot.stderr.on("data", (data) => { const text = data.toString(); fullStderr += text; appendToBuffer(outputBuffer.stderr, text); parseOutputForErrors(text); });
+
+    godot.on("close", (code) => {
+      activeGodotProcess = null;
+      const duration = Date.now() - startTime;
+      let result;
+      try {
+        const jsonLine = fullStdout.split("\n").filter(l => l.startsWith("{")).pop();
+        result = JSON.parse(jsonLine || "{}");
+      } catch { result = {}; }
+      result.duration = duration;
+      result.timedOut = false;
+      result.exitCode = code;
+      result.stdout = fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE);
+      result.stderr = fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE);
+      if (args.output_path) {
+        try { writeFileSync(args.output_path, JSON.stringify(result, null, 2), "utf-8"); } catch {}
+      }
+      resolve(jsonContent(result));
+    });
+
+    godot.on("error", (err) => {
+      activeGodotProcess = null;
+      resolve(jsonContent({ success: false, error: err.message }));
+    });
+
+    setTimeout(() => {
+      if (godot && !godot.killed) {
+        godot.kill("SIGTERM");
+        setTimeout(() => { if (!godot.killed) godot.kill("SIGKILL"); }, 2000);
+        resolve(jsonContent({ success: false, exitCode: -1, timedOut: true, duration: Date.now() - startTime }));
+      }
+    }, timeout + 5000);
+  });
+}
+
+async function handleQueryClassDB(args) {
+  try { return jsonContent(await callGDScript("query_classdb", { class_name: args.class_name || "", method_name: args.method_name || "", search: args.search || "" })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleCaptureScreenshot(args) {
+  try { return jsonContent(await callGDScript("capture_screenshot", { output_path: args.output_path || "user://screenshot.png", fullscreen: args.fullscreen !== false })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleInjectInput(args) {
+  try { return jsonContent(await callGDScript("inject_input", { type: args.type || "key", action: args.action || "", key: args.key || 0, pressed: args.pressed !== false, button: args.button || 1, position: args.position || {}, delta: args.delta || {} })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
+
+async function handleParseCheck(args) {
+  try { return jsonContent(await callGDScript("parse_check", { path: args.path || "res://" })); }
+  catch (e) { return jsonContent({ error: e.message }); }
+}
 
 const HANDLERS = {
   "godot_version": handleGodotVersion,
@@ -963,7 +855,11 @@ const HANDLERS = {
   "export_mesh_library": handleExportMeshLibrary,
   "get_export_presets": handleGetExportPresets,
   "quick_test": handleQuickTest,
-  "full_test": handleFullTest
+  "full_test": handleFullTest,
+  "parse_check": handleParseCheck,
+  "query_classdb": handleQueryClassDB,
+  "capture_screenshot": handleCaptureScreenshot,
+  "inject_input": handleInjectInput
 };
 
 // =============================================================================
