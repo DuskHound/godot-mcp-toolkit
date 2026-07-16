@@ -172,6 +172,14 @@ Your Project
 - Bounded output buffers
 - Process lifecycle management
 
+## Included Utilities
+
+Besides the MCP server, this toolkit includes standalone Godot scripts for common tasks:
+
+| Utility | File | Description |
+|---------|------|-------------|
+| Fast Parse Check | `examples/parse_check.gd` | Scan all `.gd` files for compile errors (10-30s, no asset import). Run with: `godot --headless --script examples/parse_check.gd --path /path/to/project` |
+
 ## License
 
 MIT
