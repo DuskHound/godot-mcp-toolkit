@@ -703,7 +703,7 @@ const TOOLS = [
   { name: "parse_check", description: "Fast GDScript parse validation (scans all .gd files for compile errors, 10-30s)", inputSchema: { type: "object", properties: { path: { type: "string", description: "Search path", default: "res://" } } } },
   { name: "query_classdb", description: "Query Godot ClassDB for class/method documentation. Use search to find classes, or query a specific class for methods, properties, signals.", inputSchema: { type: "object", properties: { class_name: { type: "string", description: "Class name" }, method_name: { type: "string", description: "Specific method" }, search: { type: "string", description: "Search all classes" } } } },
   { name: "capture_screenshot", description: "Capture runtime game viewport screenshot", inputSchema: { type: "object", properties: { output_path: { type: "string", description: "Save path (user://...)", default: "user://screenshot.png" }, fullscreen: { type: "boolean", default: true } } } },
-  { name: "inject_input", description: "Simulate keyboard/mouse/action input in a running game", inputSchema: { type: "object", properties: { type: { type: "string", description: "Event type: key, mouse_button, mouse_motion, action" }, action: { type: "string", description: "InputMap action name (for type=action)" }, key: { type: "number", description: "Keycode (for type=key)" }, pressed: { type: "boolean", default: true }, button: { type: "number", description: "Mouse button index (for type=mouse_button)" }, position: { type: "object", description: "Mouse position {x, y}" }, delta: { type: "object", description: "Mouse delta {x, y}" } }, required: ["type"] },
+  { name: "inject_input", description: "Simulate keyboard/mouse/action input in a running game", inputSchema: { type: "object", properties: { type: { type: "string", description: "Event type: key, mouse_button, mouse_motion, action" }, action: { type: "string", description: "InputMap action name (for type=action)" }, key: { type: "number", description: "Keycode (for type=key)" }, pressed: { type: "boolean", default: true }, button: { type: "number", description: "Mouse button index (for type=mouse_button)" }, position: { type: "object", description: "Mouse position {x, y}" }, delta: { type: "object", description: "Mouse delta {x, y}" } }, required: ["type"] } },
   // Physics (2)
   { name: "get_physics_layers", description: "Get all physics layer names (2D)", inputSchema: { type: "object", properties: {} } },
   { name: "setup_collision", description: "Configure collision layer/mask on a node or set layer names", inputSchema: { type: "object", properties: { scene_path: { type: "string", description: "res://..." }, node_path_in_scene: { type: "string", description: "Node path within scene" }, layer: { type: "number", description: "Collision layer value" }, mask: { type: "number", description: "Collision mask value" }, layer_names: { type: "object", description: "Layer name map e.g. {\"1\":\"world\",\"2\":\"player\"}" } }, required: ["scene_path"] } },
@@ -958,7 +958,7 @@ const HANDLERS = {
   "parse_check": handleParseCheck,
   "query_classdb": handleQueryClassDB,
   "capture_screenshot": handleCaptureScreenshot,
-  "inject_input": handleInjectInput
+  "inject_input": handleInjectInput,
   "get_physics_layers": handleGetPhysicsLayers,
   "setup_collision": handleSetupCollision,
   "list_audio_buses": handleListAudioBuses,
