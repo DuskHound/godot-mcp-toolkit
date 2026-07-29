@@ -305,6 +305,87 @@ async function handleCompareScenes(args) {
 }
 
 // Script tools
+// =============================================================================
+// LOCAL FILE HELPERS (no Godot process required)
+// These back read_script / list_scripts / analyze_script / edit_script so they
+// work even when the project is large or Godot is busy.
+// =============================================================================
+
+function resolveResPath(p) {
+  if (!p) return CONFIG.PROJECT_PATH;
+  if (typeof p === "string" && p.startsWith("res://")) {
+    return join(CONFIG.PROJECT_PATH, p.slice("res://".length));
+  }
+  return normalize(p);
+}
+
+function listProjectFiles(ext, searchPath = "res://") {
+  const root = resolveResPath(searchPath);
+  const results = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); }
+    catch { return; }
+    for (const e of entries) {
+      if (e.name === ".git" || e.name === ".godot") continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && e.name.endsWith(ext)) {
+        let rel = full.slice(CONFIG.PROJECT_PATH.length).replace(/\\/g, "/");
+        if (rel.startsWith("/")) rel = rel.slice(1);
+        results.push("res://" + rel);
+      }
+    }
+  };
+  walk(root);
+  results.sort();
+  return results;
+}
+
+function readScriptFile(scriptPath) {
+  const abs = resolveResPath(scriptPath);
+  if (!existsSync(abs)) throw new Error(`File not found: ${scriptPath}`);
+  const content = readFileSync(abs, "utf-8");
+  return {
+    path: scriptPath,
+    absolute_path: abs,
+    content,
+    lines: content.split("\n").length,
+    size: Buffer.byteLength(content, "utf-8"),
+  };
+}
+
+function analyzeScriptStatic(scriptPath) {
+  const abs = resolveResPath(scriptPath);
+  if (!existsSync(abs)) throw new Error(`File not found: ${scriptPath}`);
+  const src = readFileSync(abs, "utf-8");
+  const classes = [...src.matchAll(/^\s*class_name\s+(\w+)/gm)].map((m) => m[1]);
+  const functions = [...src.matchAll(/^\s*func\s+(\w+)\s*\(/gm)].map((m) => m[1]);
+  const signals = [...src.matchAll(/^\s*signal\s+(\w+)/gm)].map((m) => m[1]);
+  const constants = [...src.matchAll(/^\s*const\s+(\w+)/gm)].map((m) => m[1]);
+  const variables = [...src.matchAll(/^\s*var\s+(\w+)/gm)].map((m) => m[1]);
+  return {
+    path: scriptPath,
+    lines: src.split("\n").length,
+    classes,
+    functions,
+    signals,
+    constants,
+    variables,
+    class_count: classes.length,
+    function_count: functions.length,
+    signal_count: signals.length,
+  };
+}
+
+function writeScriptFile(scriptPath, content) {
+  const abs = resolveResPath(scriptPath);
+  const dir = dirname(abs);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(abs, content, "utf-8");
+  return { path: scriptPath, absolute_path: abs, bytes: Buffer.byteLength(content, "utf-8"), written: true };
+}
+
 function handleReadScript(args) {
   try { return jsonContent(readScriptFile(args.script_path)); }
   catch (e) { return jsonContent({ error: e.message }); }
@@ -734,9 +815,88 @@ const TOOLS = [
 // TOOL HANDLER DISPATCH
 // =============================================================================
 
+// =============================================================================
+// GODOT OPERATIONS BRIDGE
+// Spawns `godot --headless --script godot_operations.gd <operation> <json>`
+// and resolves with the JSON object the GDScript prints to stdout.
+// The bundled bridge lives at <toolkit>/src/addons/godot_mcp/godot_operations.gd
+// (__dirname is <toolkit>/src/mcp), so we resolve one level up from __dirname.
+// =============================================================================
+
+// Prefer the project's enabled addon (the working copy the Director maintains in-repo),
+// and fall back to the bundled bridge shipped with this toolkit.
+function resolveBridgeScript() {
+  const inProject = join(CONFIG.PROJECT_PATH, "addons", "godot_mcp", "godot_operations.gd");
+  if (existsSync(inProject)) return inProject;
+  return join(dirname(__dirname), "addons", "godot_mcp", "godot_operations.gd");
+}
+const GD_SCRIPT_PATH = resolveBridgeScript();
+
+async function callGDScript(operation, params = {}, timeout = 60000) {
+  const t = validateTimeout(timeout);
+  return new Promise((resolve, reject) => {
+    if (!existsSync(GD_SCRIPT_PATH)) {
+      reject(new Error(`Godot operations script not found at: ${GD_SCRIPT_PATH}`));
+      return;
+    }
+    clearOutputBuffer();
+    const startTime = Date.now();
+    const safeParams = JSON.stringify(params || {});
+    const args = ["--headless", "--path", CONFIG.PROJECT_PATH, "--script", GD_SCRIPT_PATH, String(operation), safeParams];
+    const godot = spawn(CONFIG.GODOT_PATH, args, { windowsHide: true });
+    activeGodotProcess = godot;
+
+    let fullStdout = "";
+    let fullStderr = "";
+    godot.stdout.on("data", (data) => {
+      const text = data.toString();
+      fullStdout += text;
+      appendToBuffer(outputBuffer.stdout, text);
+    });
+    godot.stderr.on("data", (data) => {
+      const text = data.toString();
+      fullStderr += text;
+      appendToBuffer(outputBuffer.stderr, text);
+      parseOutputForErrors(text);
+    });
+
+    const settle = (obj) => {
+      obj.exitCode = godot.exitCode;
+      obj.duration = Date.now() - startTime;
+      resolve(obj);
+    };
+
+    godot.on("close", (code) => {
+      activeGodotProcess = null;
+      try {
+        const jsonLine = fullStdout.split("\n").filter((l) => l.trim().startsWith("{")).pop();
+        const result = jsonLine ? JSON.parse(jsonLine) : {};
+        result.exitCode = code;
+        result.duration = Date.now() - startTime;
+        resolve(result);
+      } catch (e) {
+        settle({ success: false, error: `Failed to parse Godot output: ${e.message}`, stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE), stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE) });
+      }
+    });
+
+    godot.on("error", (err) => {
+      activeGodotProcess = null;
+      reject(err);
+    });
+
+    setTimeout(() => {
+      if (godot && !godot.killed) {
+        godot.kill("SIGTERM");
+        setTimeout(() => { if (!godot.killed) godot.kill("SIGKILL"); }, 2000);
+        reject(new Error(`Operation '${operation}' timed out after ${t}ms`));
+      }
+    }, t + 5000);
+  });
+}
+
 async function handleCheckOnly(args) {
   const timeout = validateTimeout(args.timeout || 60000);
-  const parseScriptPath = join(dirname(dirname(__dirname)), "addons", "godot_mcp", "godot_operations.gd");
+  const parseScriptPath = GD_SCRIPT_PATH;
   log("info", `Running fast parse check via --script with ${timeout}ms timeout`);
 
   return new Promise((resolve) => {
