@@ -2,7 +2,7 @@
 
 import { spawn } from "child_process";
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, statSync, unlinkSync, renameSync, copyFileSync } from "fs";
-import { join, dirname, basename, resolve, normalize, relative, extname } from "path";
+import { join, dirname, basename, resolve, normalize, relative, extname, isAbsolute } from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
 
@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 // =============================================================================
 
 const CONFIG = {
-  VERSION: "3.0.0",
+  VERSION: "3.3.0",
   GODOT_PATH: process.env.GODOT_PATH || findGodotExecutable(),
   PROJECT_PATH: sanitizePath(process.env.PROJECT_PATH || process.cwd()),
   DEBUG: process.env.DEBUG === "true" || process.argv.includes("--debug"),
@@ -31,18 +31,53 @@ const CONFIG = {
 
 function findGodotExecutable() {
   const commonPaths = [
+    // Newest-first explicit paths; the wildcard scan below covers future
+    // versions (4.8+, 5.x) without requiring edits here.
+    "C:\\Program Files\\Godot\\Godot_v4.8-stable_win64.exe",
+    "C:\\Program Files\\Godot\\Godot_v4.8-dev_win64.exe",
+    "C:\\Program Files\\Godot\\Godot_v4.7-stable_win64.exe",
     "C:\\Program Files\\Godot\\Godot_v4.6-stable_win64.exe",
-    "C:\\Program Files\\Godot\\Godot_v4.5-stable_win64.exe",
-    "C:\\Program Files\\Godot\\Godot_v4.4-stable_win64.exe",
-    "C:\\Program Files\\Godot\\Godot.exe",
-    "C:\\Program Files (x86)\\Godot\\Godot.exe",
+    "C:\\Program Files\\Godot\\Godot_v4.6-stable_win64_console.exe",
+    "D:\\Aaron\\Documents\\Godot\\Godot_v4.8-dev3_win64_console.exe",
+    "D:\\Aaron\\Documents\\Godot\\Godot_v4.6-stable_win64_console.exe",
     "/Applications/Godot.app/Contents/MacOS/Godot",
     "/usr/local/bin/godot",
     "/usr/bin/godot",
     "/snap/bin/godot"
   ];
   for (const p of commonPaths) { if (existsSync(p)) return p; }
+  // Wildcard scan: pick the highest-versioned Godot_v*.exe in known install
+  // roots so new engine releases are discovered automatically.
+  const scanRoots = [
+    "C:\\Program Files\\Godot",
+    "C:\\Program Files (x86)\\Godot",
+    join(process.env.LOCALAPPDATA || "", "Programs", "Godot"),
+    join(process.env.USERPROFILE || "", "Documents", "Godot"),
+    "D:\\Aaron\\Documents\\Godot"
+  ];
+  const found = [];
+  for (const root of scanRoots) {
+    if (!root || !existsSync(root)) continue;
+    try {
+      for (const entry of readdirSync(root)) {
+        if (/^Godot_v\d[\w.]*_win64(_console)?\.exe$/i.test(entry)) {
+          found.push(join(root, entry));
+        }
+      }
+    } catch { /* unreadable dir, skip */ }
+  }
+  if (found.length > 0) {
+    found.sort((a, b) => extractVersionKey(b).localeCompare(extractVersionKey(a)));
+    return found[0];
+  }
   return "godot";
+}
+
+function extractVersionKey(p) {
+  const m = basename(p).match(/v(\d+)[._](\d+)(?:[._-](?:dev|stable|rc)?\.?(\d+))?/i);
+  if (!m) return "00000000";
+  const stable = /stable/i.test(basename(p)) ? "9" : (/rc/i.test(basename(p)) ? "5" : "1");
+  return `${m[1].padStart(2, "0")}${m[2].padStart(2, "0")}${(m[3] || "0").padStart(2, "0")}${stable}`;
 }
 
 function sanitizePath(inputPath) {
@@ -52,7 +87,20 @@ function sanitizePath(inputPath) {
 
 function isPathWithinProject(targetPath, projectPath = CONFIG.PROJECT_PATH) {
   if (!targetPath || !projectPath) return false;
-  return resolve(projectPath, targetPath).startsWith(resolve(projectPath));
+  const rel = relative(resolve(projectPath), resolve(projectPath, targetPath));
+  return rel !== "" && !rel.startsWith("..") && !resolve(targetPath).startsWith(resolve(projectPath + "-"));
+}
+
+// Resolve a user-supplied path to an absolute path ONLY if it stays inside
+// the project directory. Returns null for anything escaping containment.
+function safeProjectWritePath(inputPath) {
+  if (!inputPath || typeof inputPath !== "string") return null;
+  const abs = inputPath.startsWith("res://")
+    ? resToAbsolute(inputPath)
+    : resolve(CONFIG.PROJECT_PATH, inputPath);
+  const rel = relative(resolve(CONFIG.PROJECT_PATH), abs);
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  return abs;
 }
 
 function validateResourcePath(resPath) {
@@ -868,14 +916,13 @@ async function callGDScript(operation, params = {}, timeout = 60000) {
 
     godot.on("close", (code) => {
       activeGodotProcess = null;
-      try {
-        const jsonLine = fullStdout.split("\n").filter((l) => l.trim().startsWith("{")).pop();
-        const result = jsonLine ? JSON.parse(jsonLine) : {};
-        result.exitCode = code;
-        result.duration = Date.now() - startTime;
-        resolve(result);
-      } catch (e) {
-        settle({ success: false, error: `Failed to parse Godot output: ${e.message}`, stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE), stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE) });
+      const parsed = extractBridgeResult(fullStdout);
+      if (parsed && typeof parsed === "object") {
+        parsed.exitCode = code;
+        parsed.duration = Date.now() - startTime;
+        resolve(parsed);
+      } else {
+        settle({ success: false, error: "Bridge produced no parseable result (see stdout/stderr)", stdout: fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE), stderr: fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE) });
       }
     });
 
@@ -894,6 +941,36 @@ async function callGDScript(operation, params = {}, timeout = 60000) {
   });
 }
 
+// Extract the bridge's sentinel-delimited result. Falls back to a
+// brace-matched scan of complete JSON objects so multi-line JSON and engine
+// noise can never be mistaken for (or clobber) the real result.
+function extractBridgeResult(stdout) {
+  const start = stdout.lastIndexOf("<<<MCP_RESULT>>>");
+  const end = stdout.lastIndexOf("<<<MCP_RESULT_END>>>");
+  if (start !== -1 && end > start) {
+    const payload = stdout.slice(start + "<<<MCP_RESULT>>>".length, end).trim();
+    try { return JSON.parse(payload); } catch {}
+  }
+  // Legacy fallback: find the last balanced {...} object in the stream.
+  for (let i = stdout.length - 1; i >= 0; i--) {
+    if (stdout[i] !== "}") continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j >= 0; j--) {
+      const ch = stdout[j];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\" && inStr) esc = true;
+      else if (ch === '"' && !esc) inStr = !inStr;
+      else if (!inStr && ch === "{") depth--;
+      else if (!inStr && ch === "}") depth++;
+      if (depth === 0 && j <= i) {
+        try { return JSON.parse(stdout.slice(j, i + 1)); } catch {}
+        break;
+      }
+    }
+  }
+  return null;
+}
+
 async function handleCheckOnly(args) {
   const timeout = validateTimeout(args.timeout || 60000);
   const parseScriptPath = GD_SCRIPT_PATH;
@@ -908,24 +985,25 @@ async function handleCheckOnly(args) {
     let fullStdout = "";
     let fullStderr = "";
 
-    godot.stdout.on("data", (data) => { const text = data.toString(); fullStdout += text; appendToBuffer(outputBuffer.stdout, text); });
-    godot.stderr.on("data", (data) => { const text = data.toString(); fullStderr += text; appendToBuffer(outputBuffer.stderr, text); parseOutputForErrors(text); });
+    godot.stdout.on("data", (data) => { const text = data.toString(); fullStdout += text.slice(0, CONFIG.MAX_OUTPUT_SIZE * 2); appendToBuffer(outputBuffer.stdout, text); });
+    godot.stderr.on("data", (data) => { const text = data.toString(); fullStderr += text.slice(0, CONFIG.MAX_OUTPUT_SIZE * 2); appendToBuffer(outputBuffer.stderr, text); parseOutputForErrors(text); });
 
     godot.on("close", (code) => {
       activeGodotProcess = null;
       const duration = Date.now() - startTime;
-      let result;
-      try {
-        const jsonLine = fullStdout.split("\n").filter(l => l.startsWith("{")).pop();
-        result = JSON.parse(jsonLine || "{}");
-      } catch { result = {}; }
+      const parsed = extractBridgeResult(fullStdout);
+      const result = parsed && typeof parsed === "object" ? parsed : {};
       result.duration = duration;
       result.timedOut = false;
       result.exitCode = code;
       result.stdout = fullStdout.substring(0, CONFIG.MAX_OUTPUT_SIZE);
       result.stderr = fullStderr.substring(0, CONFIG.MAX_OUTPUT_SIZE);
       if (args.output_path) {
-        try { writeFileSync(args.output_path, JSON.stringify(result, null, 2), "utf-8"); } catch {}
+        try {
+          const safeOut = safeProjectWritePath(args.output_path);
+          if (safeOut) writeFileSync(safeOut, JSON.stringify(result, null, 2), "utf-8");
+          else log("warn", `output_path rejected: outside project directory`);
+        } catch {}
       }
       resolve(jsonContent(result));
     });
@@ -1139,6 +1217,42 @@ const HANDLERS = {
 // =============================================================================
 // MCP SERVER
 // =============================================================================
+
+async function validateCliConfiguration() {
+	const checks = {
+		godot_executable: existsSync(CONFIG.GODOT_PATH),
+		project_file: existsSync(join(CONFIG.PROJECT_PATH, "project.godot")),
+		operations_script: existsSync(join(CONFIG.PROJECT_PATH, "addons", "godot_mcp", "godot_operations.gd")),
+	};
+	const errors = [];
+	for (const [name, passed] of Object.entries(checks)) {
+		if (!passed) errors.push(`Missing required ${name.replace(/_/g, " ")}`);
+	}
+
+	let godotVersion = "not checked";
+	if (checks.godot_executable) {
+		godotVersion = await getGodotVersion();
+		if (godotVersion === "unknown" || godotVersion.startsWith("error:") || godotVersion === "timeout") {
+			errors.push(`Unable to run configured Godot executable: ${godotVersion}`);
+		}
+	}
+
+	return {
+		success: errors.length === 0,
+		toolkitVersion: CONFIG.VERSION,
+		godotPath: CONFIG.GODOT_PATH,
+		projectPath: CONFIG.PROJECT_PATH,
+		godotVersion,
+		checks,
+		errors,
+	};
+}
+
+if (process.argv.includes("--validate")) {
+	const result = await validateCliConfiguration();
+	process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+	process.exit(result.success ? 0 : 1);
+}
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: false });
 

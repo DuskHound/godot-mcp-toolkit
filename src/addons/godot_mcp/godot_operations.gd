@@ -13,13 +13,25 @@ extends SceneTree
 
 var debug_mode: bool = false
 
+## Sentinel-delimited result protocol: clients extract JSON between these
+## markers so engine warnings/logs can never corrupt result parsing.
+const MCP_RESULT_START := "<<<MCP_RESULT>>>"
+const MCP_RESULT_END := "<<<MCP_RESULT_END>>>"
+
 func _init() -> void:
+	# Safety net: guarantee the bridge always terminates with a machine-readable
+	# result, even if an operation crashes or hangs. Clients parse the sentinel
+	# block, so engine noise can never be mistaken for a result.
+	var watchdog := create_timer(BRIDGE_TIMEOUT_SECONDS)
+	watchdog.timeout.connect(_on_watchdog_expired)
+
 	var args := OS.get_cmdline_args()
 	debug_mode = "--debug-godot" in args or "--debug" in args
 
 	var script_index := args.find("--script")
 	if script_index == -1:
 		log_error("Could not find --script argument")
+		print(JSON.stringify({"success": false, "error": "no --script argument"}))
 		quit(1)
 		return
 
@@ -29,6 +41,7 @@ func _init() -> void:
 	if args.size() <= params_index:
 		log_error("Usage: godot --headless --script godot_operations.gd <operation> <json_params>")
 		print_available_operations()
+		print(JSON.stringify({"success": false, "error": "missing operation/params arguments"}))
 		quit(1)
 		return
 
@@ -46,10 +59,35 @@ func _init() -> void:
 		params = json.get_data()
 	else:
 		log_error("Failed to parse JSON: " + json.get_error_message())
+		print(JSON.stringify({"success": false, "error": "invalid params JSON: %s" % json.get_error_message()}))
 		quit(1)
 		return
 
+	if params is not Dictionary:
+		params = {}
+
 	execute_operation(operation, params)
+	# Operations run synchronously unless they await; when control returns here
+	# and nothing async is pending, the operation has finished its work.
+	call_deferred("_finish_if_idle")
+
+const BRIDGE_TIMEOUT_SECONDS: float = 45.0
+
+func _on_watchdog_expired() -> void:
+	if is_queued_for_deletion():
+		return
+	print(MCP_RESULT_START + JSON.stringify({"success": false, "error": "bridge watchdog timeout after %ss (operation crashed or never quit)" % BRIDGE_TIMEOUT_SECONDS}) + MCP_RESULT_END)
+	quit(2)
+
+func _finish_if_idle() -> void:
+	await process_frame
+	if not _async_op_running:
+		quit(0)
+
+var _async_op_running := false
+
+func _emit_result(payload: Dictionary) -> void:
+	print(MCP_RESULT_START + JSON.stringify(payload) + MCP_RESULT_END)
 
 func execute_operation(operation: String, params: Dictionary) -> void:
 	match operation:
@@ -134,6 +172,7 @@ func execute_operation(operation: String, params: Dictionary) -> void:
 
 		_:
 			log_error("Unknown operation: " + operation)
+			print(JSON.stringify({"success": false, "error": "unknown operation: %s" % operation, "hint": "see available operations in server logs"}))
 			print_available_operations()
 			quit(1)
 
@@ -243,9 +282,9 @@ func find_files(path: String, extension: String) -> Array[String]:
 		
 		while file_name != "":
 			if dir.current_is_dir() and not file_name.begins_with("."):
-				files.append_array(find_files(path + file_name + "/", extension))
+				files.append_array(find_files(path.path_join(file_name) + "/", extension))
 			elif file_name.ends_with(extension):
-				files.append(path + file_name)
+				files.append(path.path_join(file_name))
 			file_name = dir.get_next()
 	
 	return files
@@ -295,7 +334,7 @@ func format_bytes(bytes: int) -> String:
 # ============================================================================
 
 func create_scene(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var root_node_type: String = params.get("root_node_type", "Node2D")
 	
 	log_info("Creating scene: " + scene_path)
@@ -331,7 +370,7 @@ func create_scene(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "path": scene_path}))
 
 func add_node(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var parent_path: String = params.get("parent_node_path", "root")
 	
 	log_info("Adding node to: " + scene_path)
@@ -357,17 +396,17 @@ func add_node(params: Dictionary) -> void:
 			quit(1)
 			return
 	
-	var new_node: Node = instantiate_class(params.node_type)
+	var new_node: Node = instantiate_class(params.get("node_type", ""))
 	if not new_node:
-		log_error("Failed to instantiate: " + params.node_type)
+		log_error("Failed to instantiate: " + params.get("node_type", ""))
 		quit(1)
 		return
 	
-	new_node.name = params.node_name
+	new_node.name = params.get("node_name", "")
 	
 	if params.has("properties"):
-		for property in params.properties:
-			new_node.set(property, params.properties[property])
+		for property in params.get("properties", {}):
+			new_node.set(property, params.get("properties", {})[property])
 	
 	parent.add_child(new_node)
 	new_node.owner = scene_root
@@ -378,8 +417,8 @@ func add_node(params: Dictionary) -> void:
 	if result == OK:
 		var save_error := ResourceSaver.save(packed_scene, scene_path)
 		if save_error == OK:
-			log_success("Node added: " + params.node_name)
-			print(JSON.stringify({"success": true, "node": params.node_name}))
+			log_success("Node added: " + params.get("node_name", ""))
+			print(JSON.stringify({"success": true, "node": params.get("node_name", "")}))
 		else:
 			log_error("Failed to save scene")
 			quit(1)
@@ -388,8 +427,8 @@ func add_node(params: Dictionary) -> void:
 		quit(1)
 
 func edit_node(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var node_path: String = params.node_path
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var node_path: String = params.get("node_path", "")
 	
 	log_info("Editing node in: " + scene_path)
 	
@@ -415,8 +454,8 @@ func edit_node(params: Dictionary) -> void:
 			return
 	
 	if params.has("properties"):
-		for property in params.properties:
-			target_node.set(property, params.properties[property])
+		for property in params.get("properties", {}):
+			target_node.set(property, params.get("properties", {})[property])
 	
 	var packed_scene: PackedScene = PackedScene.new()
 	var result := packed_scene.pack(scene_root)
@@ -434,8 +473,8 @@ func edit_node(params: Dictionary) -> void:
 		quit(1)
 
 func remove_node(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var node_path: String = params.node_path
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var node_path: String = params.get("node_path", "")
 	
 	log_info("Removing node from: " + scene_path)
 	
@@ -488,8 +527,8 @@ func remove_node(params: Dictionary) -> void:
 		quit(1)
 
 func load_sprite(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var texture_path := normalize_path(params.texture_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var texture_path := normalize_path(params.get("texture_path", ""))
 	
 	log_info("Loading sprite: " + texture_path)
 	
@@ -506,7 +545,7 @@ func load_sprite(params: Dictionary) -> void:
 	
 	var scene_root: Node = scene.instantiate()
 	
-	var node_path: String = params.node_path
+	var node_path: String = params.get("node_path", "")
 	if node_path.begins_with("root/"):
 		node_path = node_path.substr(5)
 	
@@ -546,8 +585,8 @@ func load_sprite(params: Dictionary) -> void:
 		quit(1)
 
 func save_scene(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var save_path: String = normalize_path(params.get("new_path", params.scene_path))
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var save_path: String = normalize_path(params.get("new_path", params.get("scene_path", "")))
 	
 	log_info("Saving scene: " + scene_path)
 	
@@ -586,8 +625,8 @@ func save_scene(params: Dictionary) -> void:
 		quit(1)
 
 func compare_scenes(params: Dictionary) -> void:
-	var scene_path_1 := normalize_path(params.scene_path_1)
-	var scene_path_2 := normalize_path(params.scene_path_2)
+	var scene_path_1 := normalize_path(params.get("scene_path_1", ""))
+	var scene_path_2 := normalize_path(params.get("scene_path_2", ""))
 	
 	log_info("Comparing scenes")
 	
@@ -644,7 +683,7 @@ func _compare_node_trees(node_1: Node, node_2: Node) -> Array:
 # ============================================================================
 
 func read_script(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
+	var script_path := normalize_path(params.get("script_path", ""))
 	
 	log_info("Reading script: " + script_path)
 	
@@ -670,7 +709,7 @@ func read_script(params: Dictionary) -> void:
 		quit(1)
 
 func edit_script(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
+	var script_path := normalize_path(params.get("script_path", ""))
 	var content: String = params.get("content", "")
 	var line_number: int = params.get("line_number", -1)
 	var new_content: String = params.get("new_content", "")
@@ -728,7 +767,7 @@ func list_scripts(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func analyze_script(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
+	var script_path := normalize_path(params.get("script_path", ""))
 	
 	log_info("Analyzing script: " + script_path)
 	
@@ -807,9 +846,9 @@ func analyze_script(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func refactor_rename(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
-	var old_name: String = params.old_name
-	var new_name: String = params.new_name
+	var script_path := normalize_path(params.get("script_path", ""))
+	var old_name: String = params.get("old_name", "")
+	var new_name: String = params.get("new_name", "")
 	
 	log_info("Refactoring: " + old_name + " -> " + new_name)
 	
@@ -843,10 +882,10 @@ func refactor_rename(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "occurrences": occurrences}))
 
 func refactor_extract_method(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
-	var start_line: int = params.start_line
-	var end_line: int = params.end_line
-	var method_name: String = params.method_name
+	var script_path := normalize_path(params.get("script_path", ""))
+	var start_line: int = params.get("start_line", -1)
+	var end_line: int = params.get("end_line", -1)
+	var method_name: String = params.get("method_name", "")
 	
 	log_info("Extracting method: " + method_name)
 	
@@ -904,7 +943,7 @@ func refactor_extract_method(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "method": method_name}))
 
 func find_script_references(params: Dictionary) -> void:
-	var search_term: String = params.search_term
+	var search_term: String = params.get("search_term", "")
 	var search_path: String = normalize_path(params.get("path", "res://"))
 	
 	log_info("Finding references to: " + search_term)
@@ -940,8 +979,8 @@ func find_script_references(params: Dictionary) -> void:
 # ============================================================================
 
 func import_texture(params: Dictionary) -> void:
-	var source_path: String = params.source_path
-	var dest_path := normalize_path(params.dest_path)
+	var source_path: String = params.get("source_path", "")
+	var dest_path := normalize_path(params.get("dest_path", ""))
 	
 	log_info("Importing texture: " + source_path)
 	
@@ -975,8 +1014,8 @@ func import_texture(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "path": dest_path, "size": buffer.size()}))
 
 func import_model(params: Dictionary) -> void:
-	var source_path: String = params.source_path
-	var dest_path := normalize_path(params.dest_path)
+	var source_path: String = params.get("source_path", "")
+	var dest_path := normalize_path(params.get("dest_path", ""))
 	
 	log_info("Importing model: " + source_path)
 	
@@ -1010,8 +1049,8 @@ func import_model(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "path": dest_path}))
 
 func import_audio(params: Dictionary) -> void:
-	var source_path: String = params.source_path
-	var dest_path := normalize_path(params.dest_path)
+	var source_path: String = params.get("source_path", "")
+	var dest_path := normalize_path(params.get("dest_path", ""))
 	
 	log_info("Importing audio: " + source_path)
 	
@@ -1089,7 +1128,7 @@ func get_project_settings(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func get_scene_tree(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	
 	log_info("Getting scene tree: " + scene_path)
 	
@@ -1203,7 +1242,7 @@ func list_scenes(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func analyze_dependencies(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	
 	log_info("Analyzing dependencies for: " + scene_path)
 	
@@ -1274,7 +1313,7 @@ func _unique_array(arr: Array) -> Array:
 # ============================================================================
 
 func get_uid(params: Dictionary) -> void:
-	var file_path := normalize_path(params.file_path)
+	var file_path := normalize_path(params.get("file_path", ""))
 	
 	log_info("Getting UID for: " + file_path)
 	
@@ -1356,11 +1395,11 @@ func resave_resources(params: Dictionary) -> void:
 # ============================================================================
 
 func connect_signal(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var source_node: String = params.source_node
-	var signal_name: String = params.signal_name
-	var target_node: String = params.target_node
-	var method_name: String = params.method_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var source_node: String = params.get("source_node", "")
+	var signal_name: String = params.get("signal_name", "")
+	var target_node: String = params.get("target_node", "")
+	var method_name: String = params.get("method_name", "")
 	
 	log_info("Connecting signal: " + signal_name + " from " + source_node + " to " + target_node + "." + method_name)
 	
@@ -1395,7 +1434,7 @@ func connect_signal(params: Dictionary) -> void:
 		quit(1)
 		return
 	
-	var result: int = source.connect(signal_name, Callable(target, method_name))
+	var result: int = source.connect(signal_name, Callable(target, method_name), Object.CONNECT_PERSIST)
 	
 	if result != OK:
 		log_error("Failed to connect signal")
@@ -1418,11 +1457,11 @@ func connect_signal(params: Dictionary) -> void:
 		quit(1)
 
 func disconnect_signal(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var source_node: String = params.source_node
-	var signal_name: String = params.signal_name
-	var target_node: String = params.target_node
-	var method_name: String = params.method_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var source_node: String = params.get("source_node", "")
+	var signal_name: String = params.get("signal_name", "")
+	var target_node: String = params.get("target_node", "")
+	var method_name: String = params.get("method_name", "")
 	
 	log_info("Disconnecting signal: " + signal_name)
 	
@@ -1465,7 +1504,7 @@ func disconnect_signal(params: Dictionary) -> void:
 		quit(1)
 
 func list_signals(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var node_path: String = params.get("node_path", "")
 	
 	log_info("Listing signals for: " + scene_path)
@@ -1513,9 +1552,9 @@ func _get_node_signals(node: Node) -> Array:
 	return result
 
 func emit_signal_test(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var node_path: String = params.node_path
-	var signal_name: String = params.signal_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var node_path: String = params.get("node_path", "")
+	var signal_name: String = params.get("signal_name", "")
 	var args: Array = params.get("args", [])
 	
 	log_info("Emitting signal: " + signal_name)
@@ -1554,7 +1593,7 @@ func emit_signal_test(params: Dictionary) -> void:
 	print(JSON.stringify({"success": true, "signal": signal_name, "node": node_path, "args": args}))
 
 func get_signal_connections(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var signal_name: String = params.get("signal_name", "")
 	
 	log_info("Getting signal connections")
@@ -1592,7 +1631,7 @@ func _get_all_nodes(root: Node) -> Array:
 	return nodes
 
 func analyze_signal_flow(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	
 	log_info("Analyzing signal flow")
 	
@@ -1616,12 +1655,15 @@ func analyze_signal_flow(params: Dictionary) -> void:
 			var connections: Array = node.get_signal_connection_list(sig["name"])
 			if not connections.is_empty():
 				for conn in connections:
+					var cb: Variant = conn.get("callable")
+					var method_name: String = cb.get_method() if cb is Callable else "unknown"
+					var target_obj: String = str(cb.get_object()) if cb is Callable else "unknown"
 					signal_flow.append({
 						"source_node": node.name,
 						"source_path": scene_root.get_path_to(node),
 						"signal": sig["name"],
-						"target": conn.get("callable", {}).get("method", "unknown"),
-						"target_node": str(conn.get("callable", {}).get("object", "unknown"))
+						"target": method_name,
+						"target_node": target_obj
 					})
 	
 	log_success("Analyzed " + str(signal_flow.size()) + " signal connections")
@@ -1632,7 +1674,7 @@ func analyze_signal_flow(params: Dictionary) -> void:
 # ============================================================================
 
 func profile_scene(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var duration: float = params.get("duration", 5.0)
 	
 	log_info("Profiling scene: " + scene_path + " for " + str(duration) + " seconds")
@@ -1768,7 +1810,7 @@ func get_performance_report(params: Dictionary) -> void:
 	print(JSON.stringify(report))
 
 func profile_script(params: Dictionary) -> void:
-	var script_path := normalize_path(params.script_path)
+	var script_path := normalize_path(params.get("script_path", ""))
 	var iterations: int = params.get("iterations", 1000)
 	
 	log_info("Profiling script: " + script_path)
@@ -1914,7 +1956,7 @@ func detect_bottlenecks(params: Dictionary) -> void:
 # ============================================================================
 
 func edit_shader(params: Dictionary) -> void:
-	var shader_path := normalize_path(params.shader_path)
+	var shader_path := normalize_path(params.get("shader_path", ""))
 	var content: String = params.get("content", "")
 	var operation: String = params.get("operation", "replace")
 	
@@ -1954,7 +1996,7 @@ func edit_shader(params: Dictionary) -> void:
 			quit(1)
 
 func create_material(params: Dictionary) -> void:
-	var material_path := normalize_path(params.material_path)
+	var material_path := normalize_path(params.get("material_path", ""))
 	var material_type: String = params.get("material_type", "StandardMaterial3D")
 	var properties: Dictionary = params.get("properties", {})
 	
@@ -1997,7 +2039,7 @@ func create_material(params: Dictionary) -> void:
 		quit(1)
 
 func edit_material(params: Dictionary) -> void:
-	var material_path := normalize_path(params.material_path)
+	var material_path := normalize_path(params.get("material_path", ""))
 	var properties: Dictionary = params.get("properties", {})
 	
 	log_info("Editing material: " + material_path)
@@ -2054,7 +2096,7 @@ func list_shaders(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func create_shader(params: Dictionary) -> void:
-	var shader_path := normalize_path(params.shader_path)
+	var shader_path := normalize_path(params.get("shader_path", ""))
 	var shader_type: String = params.get("shader_type", "spatial")
 	var template: String = params.get("template", "")
 	
@@ -2118,7 +2160,7 @@ func create_shader(params: Dictionary) -> void:
 		quit(1)
 
 func optimize_shader(params: Dictionary) -> void:
-	var shader_path := normalize_path(params.shader_path)
+	var shader_path := normalize_path(params.get("shader_path", ""))
 	
 	log_info("Analyzing shader for optimization: " + shader_path)
 	
@@ -2168,64 +2210,85 @@ func optimize_shader(params: Dictionary) -> void:
 # ============================================================================
 
 func create_animation(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("animation_name", "")
 	var node_path: String = params.get("node_path", "")
 	var length: float = params.get("length", 1.0)
-	
-	log_info("Creating animation: " + anim_name + " in " + scene_path)
-	
-	if not FileAccess.file_exists(scene_path):
-		log_error("Scene does not exist")
+
+	if anim_name.is_empty() or scene_path.is_empty():
+		log_error("animation_name and scene_path are required")
+		print(JSON.stringify({"success": false, "error": "animation_name and scene_path required"}))
 		quit(1)
 		return
-	
+
+	log_info("Creating animation: " + anim_name + " in " + scene_path)
+
+	if not FileAccess.file_exists(scene_path):
+		log_error("Scene does not exist")
+		print(JSON.stringify({"success": false, "error": "scene not found: %s" % scene_path}))
+		quit(1)
+		return
+
 	var scene: PackedScene = load(scene_path)
 	if not scene:
 		log_error("Failed to load scene")
+		print(JSON.stringify({"success": false, "error": "failed to load scene"}))
 		quit(1)
 		return
-	
+
 	var scene_root: Node = scene.instantiate()
-	
+
 	# Find or create AnimationPlayer
 	var anim_player: AnimationPlayer
 	for node in _get_all_nodes(scene_root):
 		if node is AnimationPlayer:
 			anim_player = node
 			break
-	
+
 	if not anim_player:
 		anim_player = AnimationPlayer.new()
 		anim_player.name = "AnimationPlayer"
 		scene_root.add_child(anim_player)
 		anim_player.owner = scene_root
-	
-	# Create new animation
+
+	# Create new animation (Godot 4.x: animations live in libraries; the ""
+	# library is the default one and always exists on a fresh AnimationPlayer).
 	var animation: Animation = Animation.new()
 	animation.length = length
 	animation.resource_name = anim_name
-	
-	anim_player.add_animation(anim_name, animation)
-	
+
+	var lib := anim_player.get_animation_library("")
+	if lib == null:
+		lib = anim_player.get_animation_library("")
+		if lib == null:
+			anim_player.add_animation_library("", AnimationLibrary.new())
+			lib = anim_player.get_animation_library("")
+	if lib.has_animation(anim_name):
+		log_warning("Animation '%s' already exists; replacing it" % anim_name)
+		lib.remove_animation(anim_name)
+	lib.add_animation(anim_name, animation)
+
 	var packed_scene: PackedScene = PackedScene.new()
 	var result := packed_scene.pack(scene_root)
-	
+
 	if result == OK:
 		var save_error := ResourceSaver.save(packed_scene, scene_path)
 		if save_error == OK:
 			log_success("Animation created: " + anim_name)
 			print(JSON.stringify({"success": true, "animation": anim_name, "length": length}))
+			quit(0)
 		else:
-			log_error("Failed to save scene")
+			log_error("Failed to save scene: %s" % error_string(save_error))
+			print(JSON.stringify({"success": false, "error": "save failed: %s" % error_string(save_error)}))
 			quit(1)
 	else:
 		log_error("Failed to pack scene")
+		print(JSON.stringify({"success": false, "error": "pack failed"}))
 		quit(1)
 
 func edit_animation(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("anim_name", "")
 	var keyframes: Array = params.get("keyframes", [])
 	
 	log_info("Editing animation: " + anim_name + " in " + scene_path)
@@ -2294,7 +2357,7 @@ func edit_animation(params: Dictionary) -> void:
 		quit(1)
 
 func list_animations(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	
 	log_info("Listing animations in: " + scene_path)
 	
@@ -2329,7 +2392,7 @@ func list_animations(params: Dictionary) -> void:
 	print(JSON.stringify({"scene": scene_path, "animations": animations, "count": animations.size()}))
 
 func create_animation_library(params: Dictionary) -> void:
-	var library_path := normalize_path(params.library_path)
+	var library_path := normalize_path(params.get("library_path", ""))
 	
 	log_info("Creating animation library: " + library_path)
 	
@@ -2349,9 +2412,9 @@ func create_animation_library(params: Dictionary) -> void:
 		quit(1)
 
 func add_animation_track(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
-	var track_path: String = params.track_path
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("anim_name", "")
+	var track_path: String = params.get("track_path", "")
 	var track_type: int = params.get("track_type", Animation.TYPE_VALUE)
 	
 	log_info("Adding animation track to: " + anim_name)
@@ -2400,11 +2463,11 @@ func add_animation_track(params: Dictionary) -> void:
 		quit(1)
 
 func edit_keyframe(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
-	var track_index: int = params.track_index
-	var time: float = params.time
-	var value = params.value
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("anim_name", "")
+	var track_index: int = params.get("track_index", -1)
+	var time: float = params.get("time", 0.0)
+	var value = params.get("value", 0.0)
 	
 	log_info("Editing keyframe in: " + anim_name)
 	
@@ -2458,7 +2521,7 @@ func edit_keyframe(params: Dictionary) -> void:
 # ============================================================================
 
 func export_mesh_library(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
+	var scene_path := normalize_path(params.get("scene_path", ""))
 	var output_path := normalize_path(params.get("output_path", ""))
 	
 	log_info("Exporting mesh library from: " + scene_path)
@@ -2665,8 +2728,8 @@ func full_test(params: Dictionary) -> void:
 # ============================================================================
 
 func play_animation(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("anim_name", "")
 	
 	log_info("Previewing animation: " + anim_name)
 	
@@ -2713,8 +2776,8 @@ func play_animation(params: Dictionary) -> void:
 	print(JSON.stringify(result))
 
 func export_animation(params: Dictionary) -> void:
-	var scene_path := normalize_path(params.scene_path)
-	var anim_name: String = params.anim_name
+	var scene_path := normalize_path(params.get("scene_path", ""))
+	var anim_name: String = params.get("anim_name", "")
 	var export_path := normalize_path(params.get("export_path", ""))
 	
 	log_info("Exporting animation: " + anim_name)
@@ -2761,7 +2824,7 @@ func export_animation(params: Dictionary) -> void:
 # ============================================================================
 
 func query_classdb(params: Dictionary) -> void:
-	var class_name: String = params.get("class_name", "")
+	var cname: String = params.get("class_name", "")
 	var method_name: String = params.get("method_name", "")
 	var search: String = params.get("search", "")
 
@@ -2775,21 +2838,21 @@ func query_classdb(params: Dictionary) -> void:
 		print(JSON.stringify({"success": true, "search": search, "results": results, "count": results.size()}))
 		return
 
-	if class_name.is_empty():
+	if cname.is_empty():
 		log_error("class_name or search required")
 		quit(1)
 		return
 
-	if not ClassDB.class_exists(class_name):
-		log_error("Class not found: " + class_name)
+	if not ClassDB.class_exists(cname):
+		log_error("Class not found: " + cname)
 		quit(1)
 		return
 
-	var parent := ClassDB.get_parent_class(class_name)
-	var methods := ClassDB.class_get_method_list(class_name)
-	var properties := ClassDB.class_get_property_list(class_name)
-	var signals := ClassDB.class_get_signal_list(class_name)
-	var constants := ClassDB.class_get_constant_list(class_name)
+	var parent := ClassDB.get_parent_class(cname)
+	var methods := ClassDB.class_get_method_list(cname)
+	var properties := ClassDB.class_get_property_list(cname)
+	var signals := ClassDB.class_get_signal_list(cname)
+	var constants: Array = ClassDB.class_get_integer_constant_list(cname)
 
 	var method_details: Array[Dictionary] = []
 	if not method_name.is_empty():
@@ -2810,23 +2873,27 @@ func query_classdb(params: Dictionary) -> void:
 
 	print(JSON.stringify({
 		"success": true,
-		"class": class_name,
+		"class": cname,
 		"inherits": parent,
 		"methods": method_details,
 		"properties": properties,
 		"signals": signals,
 		"constants": constants,
-		"is_instantiable": ClassDB.can_instantiate(class_name)
+		"is_instantiable": ClassDB.can_instantiate(cname)
 	}))
+	quit(0)
 
 func capture_screenshot(params: Dictionary) -> void:
 	var output_path: String = params.get("output_path", "user://screenshot.png")
 	var fullscreen: bool = params.get("fullscreen", true)
 
-	await get_tree().process_frame
-	var viewport := get_tree().root
+	_async_op_running = true
+	await process_frame
+	_async_op_running = false
+	var viewport := root
 	if not viewport:
-		log_error("No viewport available")
+		log_error("No viewport available (headless runs have no rendered frame; use a windowed run)")
+		print(JSON.stringify({"success": false, "error": "no viewport in headless mode"}))
 		quit(1)
 		return
 
@@ -2836,7 +2903,8 @@ func capture_screenshot(params: Dictionary) -> void:
 		log_success("Screenshot saved: " + output_path)
 		print(JSON.stringify({"success": true, "path": output_path, "size": image.get_size()}))
 	else:
-		log_error("Failed to save screenshot")
+		log_error("Failed to save screenshot: %s" % error_string(error))
+		print(JSON.stringify({"success": false, "error": "save failed", "code": error}))
 		quit(1)
 
 func inject_input(params: Dictionary) -> void:
@@ -2848,9 +2916,10 @@ func inject_input(params: Dictionary) -> void:
 	var mouse_pos: Dictionary = params.get("position", {})
 	var mouse_delta: Dictionary = params.get("delta", {})
 
-	var viewport := get_tree().root
+	var viewport := root
 	if not viewport:
 		log_error("No viewport available")
+		print(JSON.stringify({"success": false, "error": "no viewport"}))
 		quit(1)
 		return
 
@@ -2858,6 +2927,7 @@ func inject_input(params: Dictionary) -> void:
 		"action":
 			if action_name.is_empty():
 				log_error("action name required")
+				print(JSON.stringify({"success": false, "error": "action name required"}))
 				quit(1)
 				return
 			var action := InputMap.action_get_events(action_name)
@@ -2903,11 +2973,22 @@ func parse_check(params: Dictionary) -> void:
 	var errors: Array[Dictionary] = []
 
 	for script_path in scripts:
-		var script := load(script_path) as Script
-		if not script:
+		var fa := FileAccess.open(script_path, FileAccess.READ)
+		if not fa:
 			failed += 1
-			errors.append({"path": script_path, "error": "Failed to load (compile error)"})
-			printerr("PARSE ERROR: " + script_path + " -> Failed to load")
+			errors.append({"path": script_path, "error": "Failed to open file"})
+			printerr("PARSE ERROR: " + script_path + " -> Failed to open file")
+			continue
+		var src := fa.get_as_text()
+		fa.close()
+		var s := GDScript.new()
+		s.resource_path = script_path
+		s.source_code = src
+		var err := s.reload()
+		if err != OK:
+			failed += 1
+			errors.append({"path": script_path, "error": "Compile error (code %d)" % err})
+			printerr("PARSE ERROR: " + script_path + " -> Compile error (code " + str(err) + ")")
 		else:
 			passed += 1
 
@@ -2918,6 +2999,7 @@ func parse_check(params: Dictionary) -> void:
 		"failed": failed,
 		"errors": errors
 	}))
+	quit(0)
 
 func _find_gd_files(base: String) -> Array[String]:
 	var result: Array[String] = []

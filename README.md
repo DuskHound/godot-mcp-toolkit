@@ -1,4 +1,4 @@
-# Godot MCP Toolkit v3.0
+# Godot MCP Toolkit v3.2.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Godot](https://img.shields.io/badge/Godot-4.4%2B-blue.svg)](https://godotengine.org)
@@ -54,6 +54,17 @@ Add to your MCP client config (`.mcp.json` or Claude Desktop settings):
     }
   }
 }
+```
+
+### 4. Validate the setup
+
+Run the non-interactive validation command after configuring a client or before
+using the toolkit in CI. It checks the configured project, Godot executable,
+and in-project operations script, then prints a JSON report and exits non-zero
+when any required dependency is unavailable.
+
+```bash
+npm test
 ```
 
 ## Tool Reference
